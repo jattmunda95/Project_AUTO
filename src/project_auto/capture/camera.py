@@ -1,4 +1,4 @@
-"""Webcam capture boundary."""
+"""Webcam capture, kept separate from inference and display."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class CameraConfig:
 
 
 class Camera:
-    """Own an OpenCV camera and release it reliably."""
+    """Own one OpenCV video capture and release it reliably."""
 
     def __init__(self, config: CameraConfig) -> None:
         self.config = config
@@ -37,7 +37,7 @@ class Camera:
 
     def read(self) -> NDArray:
         if self._capture is None:
-            raise RuntimeError("Camera must be opened before reading")
+            raise RuntimeError("Camera is not open")
         success, frame = self._capture.read()
         if not success or frame is None:
             raise RuntimeError("Could not read a frame from the camera")

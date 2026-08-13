@@ -1,5 +1,5 @@
 [project]
-name = "project-auto-live-tracking"
+name = "project-auto"
 version = "0.1.0"
 description = "Local live object tracking for Project AUTO"
 readme = "README.md"
