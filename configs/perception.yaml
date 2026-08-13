@@ -1,0 +1,6 @@
+source_model: models/yolo11s.pt
+openvino_model: models/yolo11s_openvino_model
+confidence: 0.35
+iou: 0.45
+image_size: 640
+device: AUTO

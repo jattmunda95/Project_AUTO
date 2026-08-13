@@ -1,0 +1,29 @@
+[project]
+name = "project-auto-live-tracking"
+version = "0.1.0"
+description = "Local live object tracking for Project AUTO"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "opencv-python>=4.10",
+    "openvino>=2024.0",
+    "PyYAML>=6.0",
+    "ultralytics>=8.4",
+]
+
+[project.scripts]
+project-auto-live-tracking = "project_auto.main:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

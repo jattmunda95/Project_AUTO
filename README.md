@@ -1,0 +1,19 @@
+# Project AUTO
+
+Local YOLO11s object detection for an overhead table camera, using OpenVINO inference.
+
+## Run the live detector
+
+Install the project in a Python 3.10–3.13 virtual environment:
+
+```powershell
+python -m pip install -e .
+project-auto-live-tracking
+```
+
+On its first run, Ultralytics downloads `yolo11s.pt` if necessary and exports an OpenVINO
+model into `models/yolo11s_openvino_model`. Later runs load the exported model directly.
+Press `q` in the camera window to stop.
+
+Camera and inference settings live in `configs/camera.yaml` and
+`configs/perception.yaml`.
