@@ -9,10 +9,11 @@ dependencies = [
     "openvino>=2024.0",
     "PyYAML>=6.0",
     "ultralytics>=8.4",
+    "SQLAlchemy>=2.0,<3.0",
 ]
 
 [project.scripts]
-project-auto-live-tracking = "project_auto.main:main"
+project-auto = "project_auto.main:main"
 
 [build-system]
 requires = ["setuptools>=75"]

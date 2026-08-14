@@ -2,3 +2,4 @@ opencv-python>=4.10
 openvino>=2024.0
 PyYAML>=6.0
 ultralytics>=8.4
+SQLAlchemy<3.0,>=2.0

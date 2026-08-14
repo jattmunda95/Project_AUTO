@@ -2,11 +2,10 @@
 
 ## Current task
 
-Verify the basic vision pipeline on the target webcam and laptop.
 
 ## Next
 
-- Add tracking.
+
 - Introduce stable in-memory track state.
 - Detect placement and relocation events.
 - Design the SQLite schema.
@@ -23,3 +22,5 @@ Verify the basic vision pipeline on the target webcam and laptop.
   - YOLO11s export and inference through OpenVINO;
   - structured detections;
   - debug bounding boxes and labels.
+
+- Add tracking.

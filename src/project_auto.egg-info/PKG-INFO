@@ -8,6 +8,7 @@ Requires-Dist: opencv-python>=4.10
 Requires-Dist: openvino>=2024.0
 Requires-Dist: PyYAML>=6.0
 Requires-Dist: ultralytics>=8.4
+Requires-Dist: SQLAlchemy<3.0,>=2.0
 
 # Project AUTO
 
