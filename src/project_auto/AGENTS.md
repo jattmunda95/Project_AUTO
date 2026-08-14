@@ -1,38 +1,30 @@
-# Project AUTO — Codex Instructions
+# Project AUTO - Codex Instructions
 
 ## Project goal
 
-Build a local computer-vision system that remembers where physical objects
-were last placed on a table.
+Build a local computer-vision system that remembers where physical objects were last placed
+on a table.
 
-The system must:
+The target architecture is:
 
-- capture a live overhead camera feed;
-- detect objects using YOLO11s;
-- track object instances across frames;
-- preserve object identity during temporary occlusion;
-- recognise meaningful relocation or placement events;
-- store each unique object and its location history;
-- save the clearest image associated with each relocation;
-- answer queries such as "Where is my mug?"
-
-## Current architecture
-
-Pipeline:
-
+```text
 Camera
-→ YOLO11s detection
-→ ByteTrack or BoT-SORT tracking
-→ object identity association
-→ placement-event detection
-→ SQLite persistence
-→ query interface
+-> YOLO11s/OpenVINO detection
+-> ByteTrack or BoT-SORT tracking
+-> permanent object identity association
+-> state and placement-event decisions
+-> SQLite persistence
+-> query interface
+```
 
-Target hardware:
+The currently implemented live pipeline stops after detection/debug display. The database
+foundation exists separately. Do not describe tracking or live persistence as implemented.
+
+## Target hardware
 
 - Lenovo Yoga Pro 7i
 - Intel integrated graphics
-- OpenVINO-optimised inference
+- OpenVINO-optimized inference
 - Fixed overhead camera
 - Entirely local operation for the MVP
 
@@ -40,30 +32,43 @@ Target hardware:
 
 - Python 3.10 or newer.
 - Use type hints for public functions.
-- Keep camera capture, inference, tracking and persistence separate.
+- Keep camera capture, inference, tracking, state decisions, and persistence separate.
 - Configuration belongs in YAML rather than hard-coded constants.
 - Use `pathlib.Path` for filesystem paths.
-- Do not introduce a new dependency without explaining why.
+- Do not introduce a dependency without explaining why.
 - Prefer small, testable components over one large application file.
 - Never treat a tracker ID alone as permanent object identity.
-- Do not write a database observation for every video frame.
-- Store state changes and meaningful events instead.
+- Never create database observations for individual video frames.
+- Store meaningful state changes and events instead.
+- Store evidence file paths in SQLite, not image/video binary data.
 
-## Before changing code
+## Working agreement
+
+- By default, change only one file per user prompt.
+- Explain the intended file change before editing it.
+- After each main function or feature is verified, update `TASKS.md` in a separate approved
+  step.
+- Ask for approval before moving to the next function when working function by function.
+
+## Before changing functional code
 
 1. Read `PROJECT_CONTEXT.md`.
 2. Read `TASKS.md`.
 3. Inspect the relevant existing files.
 4. Explain any architectural change before implementing it.
+5. Ask before changing additional functional files.
 
 ## Verification
 
 After modifying code:
 
-- run the relevant tests;
-- run formatting and lint checks when configured;
-- report what was changed and what remains unverified.
+- run focused tests for the changed behavior;
+- run formatting and lint checks when available;
+- report what changed and what remains unverified;
+- do not mark work complete until verification passes.
 
 ## Current priority
 
-Follow the `Current task` section in `TASKS.md`.
+Follow the `Current task` section in `TASKS.md`. The next planned implementation is the item
+state machine; it decides transitions while `DatabaseStore` remains responsible for durable
+persistence.
