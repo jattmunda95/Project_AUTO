@@ -14,6 +14,7 @@ from ultralytics import YOLO
 class Detection:
     """One structured object prediction."""
 
+    track_id: int | None
     class_id: int
     class_name: str
     confidence: float
@@ -51,8 +52,10 @@ class YoloDetector:
 
     def detect(self, frame: NDArray) -> list[Detection]:
         """Run inference on one frame and return structured detections."""
-        results = self.model.predict(
+        results = self.model.track(
             source=frame,
+            persist=True,
+            tracker="botsort.yaml",
             conf=self.confidence,
             iou=self.iou,
             imgsz=self.image_size,
@@ -69,10 +72,12 @@ class YoloDetector:
 
         detections: list[Detection] = []
         for box in result.boxes:
+            track_id = int(box.id.item()) if box.id is not None else None
             class_id = int(box.cls.item())
             coordinates = tuple(round(value) for value in box.xyxy[0].tolist())
             detections.append(
                 Detection(
+                    track_id=track_id,
                     class_id=class_id,
                     class_name=str(result.names[class_id]),
                     confidence=float(box.conf.item()),
