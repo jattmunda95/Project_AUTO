@@ -62,6 +62,34 @@ class DatabaseStore:
 
         return item
 
+    def add_item_with_event(
+        self,
+        class_name: str,
+        status: ItemStatus,
+        source_track_id: int,
+        detector_confidence: float,
+    ) -> tuple[Item, ItemEvent]:
+        """Create an item and its initial ADDED event in one transaction."""
+        item = Item(
+            class_name=class_name,
+            status=status,
+        )
+
+        with self.session_factory() as session:
+            session.add(item)
+            session.flush()
+
+            added_event = ItemEvent(
+                item_id=item.id,
+                event_type=ItemEventType.ADDED,
+                source_track_id=source_track_id,
+                detector_confidence=detector_confidence,
+            )
+            session.add(added_event)
+            session.commit()
+
+        return item, added_event
+
     def record_event(
         self,
         item_id: int,
@@ -134,12 +162,14 @@ class DatabaseStore:
         context_image_path: str | None = None,
         video_clip_path: str | None = None,
         notes: str | None = None,
-    ) -> ItemEvent:
-        """Mark an item as removed and record its removal event atomically."""
+    ) -> ItemEvent | None:
+        """Mark an item removed, recording the meaningful transition once."""
         with self.session_factory() as session:
             item = session.get(Item, item_id)
             if item is None:
                 raise ValueError(f"Item {item_id} does not exist")
+            if item.status is ItemStatus.REMOVED:
+                return None
 
             item.status = ItemStatus.REMOVED
             event = ItemEvent(
@@ -164,12 +194,14 @@ class DatabaseStore:
         source_region: str | None = None,
         context_image_path: str | None = None,
         notes: str | None = None,
-    ) -> ItemEvent:
-        """Mark an item as occluded and record the status change atomically."""
+    ) -> ItemEvent | None:
+        """Mark an item occluded and record the status transition once."""
         with self.session_factory() as session:
             item = session.get(Item, item_id)
             if item is None:
                 raise ValueError(f"Item {item_id} does not exist")
+            if item.status is ItemStatus.OCCLUDED:
+                return None
 
             item.status = ItemStatus.OCCLUDED
             event = ItemEvent(
@@ -195,7 +227,7 @@ class DatabaseStore:
         context_image_path: str | None = None,
         notes: str | None = None,
     ) -> ItemEvent | None:
-        """Mark an item present, recording an event only when its status changes."""
+        """Mark an item present and record the corresponding transition once."""
         with self.session_factory() as session:
             item = session.get(Item, item_id)
             if item is None:
@@ -210,6 +242,7 @@ class DatabaseStore:
             )
             item.status = ItemStatus.PRESENT
             item.last_seen_at = utc_now()
+
             event = ItemEvent(
                 item=item,
                 event_type=event_type,

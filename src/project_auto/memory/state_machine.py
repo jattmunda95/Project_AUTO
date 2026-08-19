@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from project_auto.memory.models import ItemEventType, ItemStatus
+from project_auto.perception.tracker import TrackSignal, TrackSignalType
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,3 +22,11 @@ def decide_item_added() -> StateDecision:
         status=ItemStatus.PRESENT,
         event_type=ItemEventType.ADDED,
     )
+
+
+def decide_track_signal(signal: TrackSignal) -> StateDecision:
+    """Translate one meaningful tracker signal into a persistence decision."""
+    if signal.signal_type is TrackSignalType.ADD:
+        return decide_item_added()
+
+    raise ValueError(f"Unsupported tracker signal: {signal.signal_type}")

@@ -17,8 +17,10 @@ Camera
 -> query interface
 ```
 
-The currently implemented live pipeline stops after detection/debug display. The database
-foundation exists separately. Do not describe tracking or live persistence as implemented.
+The detector invokes Ultralytics BoT-SORT and exposes optional temporary track IDs. The
+tracker implements candidate-to-confirmed processing and emits a one-time `ADD` signal, but
+it is not connected to the live loop, state machine, or database. Do not describe permanent
+identity association or live persistence as implemented.
 
 ## Target hardware
 
@@ -46,6 +48,8 @@ foundation exists separately. Do not describe tracking or live persistence as im
 
 - By default, change only one file per user prompt.
 - Explain the intended file change before editing it.
+- When building function by function, add only one explicitly approved code chunk at a time
+  and explain it before moving on.
 - After each main function or feature is verified, update `TASKS.md` in a separate approved
   step.
 - Ask for approval before moving to the next function when working function by function.
@@ -69,6 +73,8 @@ After modifying code:
 
 ## Current priority
 
-Follow the `Current task` section in `TASKS.md`. The next planned implementation is the item
-state machine; it decides transitions while `DatabaseStore` remains responsible for durable
-persistence.
+Follow the `Current task` section in `TASKS.md`. Add focused tests for tracker confirmation,
+one-time `ADD` signaling, missing-ID handling, the implemented 10-frame candidate dropout
+allowance, and invalid configuration. After those pass, the next architectural step is to
+connect `ADD` signals to the state-machine decision without placing persistence inside the
+tracker.

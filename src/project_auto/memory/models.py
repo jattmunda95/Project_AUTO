@@ -22,11 +22,10 @@ class ItemStatus(str, Enum):
 
 class ItemEventType(str, Enum):
     ADDED = "added"
-    REMOVED = "removed"
     RETURNED = "returned"
-    STATUS_CHANGED = "status_changed"
+    REMOVED = "removed"
     MOVED = "moved"
-    PLACED = "placed"
+    STATUS_CHANGED = "status_changed"
 
 
 class Base(DeclarativeBase):
