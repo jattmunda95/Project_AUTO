@@ -18,9 +18,10 @@ Camera
 ```
 
 The detector invokes Ultralytics BoT-SORT and exposes optional temporary track IDs. The
-tracker implements candidate-to-confirmed processing and emits a one-time `ADD` signal, but
-it is not connected to the live loop, state machine, or database. Do not describe permanent
-identity association or live persistence as implemented.
+tracker, state machine, event engine, and database store now implement and verify the initial
+`ADD` workflow in isolation, but it is not connected to the live loop. Track-to-item bindings
+are provisional session mappings, not permanent identity recognition. Do not describe live
+persistence or reliable re-identification as implemented.
 
 ## Target hardware
 
@@ -73,8 +74,7 @@ After modifying code:
 
 ## Current priority
 
-Follow the `Current task` section in `TASKS.md`. Add focused tests for tracker confirmation,
-one-time `ADD` signaling, missing-ID handling, the implemented 10-frame candidate dropout
-allowance, and invalid configuration. After those pass, the next architectural step is to
-connect `ADD` signals to the state-machine decision without placing persistence inside the
-tracker.
+Follow the `Current task` section in `TASKS.md`. Connect the verified initial `ADD` workflow
+to the live loop one approved code chunk at a time. Add database-path configuration before
+editing `main.py`; then construct the store, tracker, and event engine once outside the frame
+loop and process only meaningful tracker signals. Do not add per-frame database writes.

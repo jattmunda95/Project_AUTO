@@ -9,11 +9,25 @@ current frame.
 ## Implemented pipeline
 
 ```text
-Camera -> YOLO11s/OpenVINO detection -> structured detections -> debug display
+Camera -> YOLO11s/OpenVINO + BoT-SORT -> structured detections -> debug display
 ```
 
-The camera and detector are working on the target laptop. Tracking and memory are not yet
-connected to this live pipeline.
+The live loop receives optional temporary BoT-SORT IDs, but it does not yet call the lifecycle
+tracker or persistence workflow.
+
+The initial `ADD` workflow is implemented and tested separately:
+
+```text
+list[Detection]
+-> candidate confirmation after 30 sightings
+-> TrackSignal.ADD
+-> StateDecision(PRESENT, ADDED)
+-> EventEngine
+-> atomic Item + ItemEvent persistence
+```
+
+Candidates tolerate up to 10 consecutive missed frames and expire on the 11th. Detections
+without a BoT-SORT ID are ignored by lifecycle processing.
 
 ## Persistent-memory foundation
 
@@ -32,8 +46,8 @@ Item states are:
 
 ### `item_events`
 
-One row represents a meaningful change such as added, removed, returned, moved, placed, or
-status changed. Events belong permanently to `item_id`.
+One row represents a meaningful change: added, returned, removed, moved, or status changed.
+Events belong permanently to `item_id`.
 
 `source_track_id` is optional diagnostic metadata copied from ByteTrack or BoT-SORT. It is
 temporary and session-specific. One permanent item can have different tracker IDs over its
@@ -51,20 +65,21 @@ database records meaningful events, never individual frames.
 - Item history is returned chronologically.
 - Present-item queries include `present` and `occluded`, but exclude `removed`.
 - Store status operations update the item and insert the associated event atomically.
-- Fourteen focused in-memory SQLite tests currently pass.
+- Initial item creation and its `ADDED` event can be committed atomically.
+- Twenty-four tests currently pass across detection, tracking, event coordination, and
+  persistence.
 
 ## Next architecture step
 
-Implement `memory/state_machine.py` as decision logic separate from persistence:
+Connect the isolated components to the live loop without collapsing their responsibilities:
 
 ```text
-observation/state input
-        -> state machine decides whether a meaningful transition occurred
-        -> database store persists the resulting state and event
+frame -> detections -> tracker signals -> state decisions -> event engine -> store
 ```
 
-The state machine must suppress repeated observations that do not represent a state change.
-It should not write directly for every video frame.
+The store, tracker, and event engine must be created once before frame processing. Ordinary
+frames should remain in memory and produce no database write. Database configuration belongs
+in YAML.
 
 Expected transitions include:
 
@@ -76,10 +91,11 @@ Expected transitions include:
 
 ## Deferred work
 
-- Stable in-memory tracking state and tracker integration.
-- Permanent identity association across tracker-ID changes.
+- Reliable permanent identity association across tracker-ID changes; the event engine's
+  current track-to-item dictionary is only a provisional session binding.
+- Recognition, appearance embeddings, and trajectory checks for ID-switch recovery.
+- Missing, occluded, reappeared, removed, returned, and movement signal processing.
 - Placement and relocation-event detection.
 - High-quality evidence crop selection.
 - Object-location queries.
-- Embeddings or recognition improvements.
 - Schema migrations beyond the initial local MVP.

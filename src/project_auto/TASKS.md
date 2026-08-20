@@ -2,21 +2,19 @@
 
 ## Current task
 
-Add focused unit tests for the initial add-confirmation lifecycle in
-`tests/test_state_machine.py` or a dedicated tracker test file, one code chunk at a time:
+Connect the verified initial `ADD` workflow to the live pipeline, one code chunk at a time:
 
-- no signal before the 30th sighting;
-- one `ADD` signal on the 30th sighting;
-- no repeated `ADD` signal after confirmation;
-- detections without a BoT-SORT ID are ignored;
-- candidates tolerate 10 consecutive missed frames and expire on the 11th;
-- invalid confirmation and missed-frame configuration is rejected.
+- add a YAML-configured SQLite database path;
+- construct `DatabaseStore`, create its schema, and construct `DetectionTracker` and
+  `EventEngine` once before the frame loop;
+- pass each frame's complete detection list through `DetectionTracker.update()`;
+- pass each meaningful signal through `EventEngine.process_signal()`;
+- preserve the existing debug display and avoid database writes for ordinary frames;
+- add focused integration tests where practical before relying on live camera verification.
 
 ## Next
 
-- Associate temporary tracker IDs with permanent item IDs.
-- Connect a newly confirmed track to the state-machine `ADDED` decision and atomic database
-  persistence.
+- Replace provisional track bindings with reliable permanent identity association.
 - Implement the remaining `PRESENT`, `OCCLUDED`, and `REMOVED` state transitions.
 - Detect placement and relocation events.
 - Save high-quality object crops and context evidence.
@@ -45,8 +43,16 @@ Add focused unit tests for the initial add-confirmation lifecycle in
   - tolerates up to 10 consecutive candidate misses;
   - emits one immutable `ADD` signal when confirmation occurs;
   - does not write directly to the state machine or database.
-- Detector unit test updated for `model.track()` and temporary track IDs; full suite currently
-  passes with 15 tests.
+- Tracker tests cover confirmation timing, one-time signaling, missing IDs, the 10/11-frame
+  dropout boundary, and invalid configuration.
+- Initial state-decision and event workflow:
+  - `decide_track_signal()` maps tracker `ADD` to `PRESENT` plus `ADDED`;
+  - `add_item_with_event()` atomically creates the permanent item and linked initial event;
+  - `EventEngine.process_signal()` dispatches the decision and records a provisional
+    track-to-item association;
+  - event-engine tests cover persistence, metadata, duplicate rejection, and mismatched IDs.
+- Detector unit test updated for `model.track()` and temporary track IDs; the full suite
+  currently passes with 24 tests.
 - Initial persistent-memory database foundation:
   - SQLAlchemy 2.x typed `Item` and `ItemEvent` models;
   - constrained lowercase string enums;
@@ -59,11 +65,10 @@ Add focused unit tests for the initial add-confirmation lifecycle in
 
 ## Not implemented yet
 
-- Formal unit tests for tracker confirmation and dropout behavior have not been added.
-- BoT-SORT IDs and tracker signals are not yet connected in the live pipeline or shown by the
-  live display.
+- BoT-SORT detections, tracker signals, and event persistence are not yet connected in
+  `main.py`.
 - Missing, reappeared, and removed tracker signals are not implemented.
-- `memory/state_machine.py` only handles the initial `ADDED` decision; remaining transitions
-  are not implemented.
-- `events/event_engine.py` and `memory/regions.py` are empty.
+- `memory/state_machine.py` and `events/event_engine.py` handle only the initial `ADD` path;
+  remaining transitions are not implemented.
+- `memory/regions.py` is empty.
 - The live detector does not yet write to the database.
