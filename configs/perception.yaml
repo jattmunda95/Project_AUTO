@@ -4,3 +4,6 @@ confidence: 0.35
 iou: 0.45
 image_size: 640
 device: cpu
+
+# Tracker behaviour
+removal_timeout_seconds: 2.0

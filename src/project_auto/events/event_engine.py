@@ -14,12 +14,17 @@ class EventEngine:
         self.store = store
         self._item_ids_by_track_id: dict[int, int] = {}
 
-    def process_signal(self, signal: TrackSignal) -> tuple[Item, ItemEvent]:
+    def process_signal(
+        self,
+        signal: TrackSignal,
+    ) -> tuple[Item, ItemEvent] | ItemEvent | None:
         """Decide what one tracker signal means and dispatch its side effect."""
         decision = decide_track_signal(signal)
 
         if decision.event_type is ItemEventType.ADDED:
             return self.process_add(signal, decision)
+        if decision.event_type is ItemEventType.REMOVED:
+            return self.process_remove(signal, decision)
 
         raise ValueError(f"Unsupported state decision: {decision.event_type}")
 
@@ -47,3 +52,28 @@ class EventEngine:
         self._item_ids_by_track_id[signal.track_id] = item.id
 
         return item, added_event
+
+    def process_remove(
+        self,
+        signal: TrackSignal,
+        decision: StateDecision,
+    ) -> ItemEvent | None:
+        """Persist removal for an associated item while retaining its track binding."""
+        if signal.signal_type is not TrackSignalType.REMOVE:
+            raise ValueError("process_remove requires a REMOVE track signal")
+        if decision.event_type is not ItemEventType.REMOVED:
+            raise ValueError("process_remove requires a REMOVED state decision")
+        if signal.detection.track_id != signal.track_id:
+            raise ValueError("Signal and detection track IDs must match")
+
+        item_id = self._item_ids_by_track_id.get(signal.track_id)
+        if item_id is None:
+            raise ValueError(f"Track {signal.track_id} is not associated with an item")
+
+        removed_event = self.store.mark_removed(
+            item_id=item_id,
+            source_track_id=signal.track_id,
+            detector_confidence=signal.detection.confidence,
+        )
+
+        return removed_event

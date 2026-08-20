@@ -24,9 +24,19 @@ def decide_item_added() -> StateDecision:
     )
 
 
+def decide_item_removed() -> StateDecision:
+    """Return the state and event for a confirmed item that timed out."""
+    return StateDecision(
+        status=ItemStatus.REMOVED,
+        event_type=ItemEventType.REMOVED,
+    )
+
+
 def decide_track_signal(signal: TrackSignal) -> StateDecision:
     """Translate one meaningful tracker signal into a persistence decision."""
     if signal.signal_type is TrackSignalType.ADD:
         return decide_item_added()
+    if signal.signal_type is TrackSignalType.REMOVE:
+        return decide_item_removed()
 
     raise ValueError(f"Unsupported tracker signal: {signal.signal_type}")

@@ -63,11 +63,58 @@ def test_candidate_expires_after_eleventh_consecutive_missed_frame() -> None:
     assert tracker.update([detection]) == []
 
 
+def test_confirmed_track_emits_remove_once_after_timeout() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(
+        confirmation_frames=1,
+        removal_timeout_seconds=2.0,
+        clock=lambda: now[0],
+    )
+    detection = make_detection()
+    tracker.update([detection])
+
+    assert tracker.update([]) == []
+    now[0] = 1.99
+    assert tracker.update([]) == []
+
+    now[0] = 2.0
+    signals = tracker.update([])
+
+    assert len(signals) == 1
+    assert signals[0].signal_type is TrackSignalType.REMOVE
+    assert signals[0].track_id == 7
+    assert signals[0].detection is detection
+    assert tracker.update([]) == []
+
+
+def test_same_track_id_reappearing_before_timeout_cancels_removal() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(
+        confirmation_frames=1,
+        removal_timeout_seconds=2.0,
+        clock=lambda: now[0],
+    )
+    detection = make_detection()
+    tracker.update([detection])
+    tracker.update([])
+
+    now[0] = 1.5
+    assert tracker.update([detection]) == []
+
+    now[0] = 3.0
+    assert tracker.update([]) == []
+    now[0] = 4.99
+    assert tracker.update([]) == []
+    now[0] = 5.0
+    assert tracker.update([])[0].signal_type is TrackSignalType.REMOVE
+
+
 @pytest.mark.parametrize(
     "tracker",
     [
         DetectionTracker(confirmation_frames=0),
         DetectionTracker(max_missed_frames=-1),
+        DetectionTracker(removal_timeout_seconds=0),
     ],
 )
 def test_invalid_configuration_is_rejected(tracker: DetectionTracker) -> None:
