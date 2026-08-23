@@ -6,4 +6,9 @@ image_size: 640
 device: cpu
 
 # Tracker behaviour
+candidate_confirmation_seconds: 2.0
+max_candidate_missing_frames: 15
 removal_timeout_seconds: 2.0
+movement_buffer_scale: 1.2
+movement_stop_tolerance_pixels: 5.0
+movement_stopped_confirmation_seconds: 1.0

@@ -17,11 +17,12 @@ Camera
 -> query interface
 ```
 
-The detector invokes Ultralytics BoT-SORT and exposes optional temporary track IDs. The
-tracker, state machine, event engine, and database store now implement and verify the initial
-`ADD` workflow in isolation, but it is not connected to the live loop. Track-to-item bindings
-are provisional session mappings, not permanent identity recognition. Do not describe live
-persistence or reliable re-identification as implemented.
+The detector invokes Ultralytics BoT-SORT and exposes optional temporary track IDs. The live
+application passes detections through the tracker, state machine, event engine, and SQLite
+store. The verified lifecycle supports time-confirmed `ADD`, stable-placement `MOVED`, and
+`REMOVE` after a stable or moving track has been absent for two seconds. Track-to-item
+bindings are provisional session mappings, not permanent identity recognition. Do not
+describe reliable re-identification as implemented.
 
 ## Target hardware
 
@@ -74,7 +75,9 @@ After modifying code:
 
 ## Current priority
 
-Follow the `Current task` section in `TASKS.md`. Connect the verified initial `ADD` workflow
-to the live loop one approved code chunk at a time. Add database-path configuration before
-editing `main.py`; then construct the store, tracker, and event engine once outside the frame
-loop and process only meaningful tracker signals. Do not add per-frame database writes.
+Follow the `Current task` section in `TASKS.md`. Finish permanent event-engine and persistence
+coverage for the implemented `MOVED` lifecycle, then add ReID-ready `RETURNED` boilerplate
+without pretending temporary tracker IDs establish permanent identity. Movement events must
+reference the permanent `item_id`; keep `source_track_id` as optional diagnostic metadata
+only. The local SQLite database was recreated with the duration and bbox columns, and the
+`ADD`/`MOVED` live demo succeeded on 22 August 2026.

@@ -9,25 +9,48 @@ current frame.
 ## Implemented pipeline
 
 ```text
-Camera -> YOLO11s/OpenVINO + BoT-SORT -> structured detections -> debug display
+Camera
+-> YOLO11s/OpenVINO + BoT-SORT
+-> structured detections
+-> lifecycle tracker
+-> state decisions
+-> event engine
+-> SQLite store
+-> debug display
 ```
 
-The live loop receives optional temporary BoT-SORT IDs, but it does not yet call the lifecycle
-tracker or persistence workflow.
-
-The initial `ADD` workflow is implemented and tested separately:
+The live loop now calls the lifecycle and persistence workflow. The implemented meaningful
+signals are:
 
 ```text
 list[Detection]
--> candidate confirmation after 30 sightings
+-> candidate confirmation after 2 seconds with at most 15 cumulative missing frames
 -> TrackSignal.ADD
 -> StateDecision(PRESENT, ADDED)
 -> EventEngine
 -> atomic Item + ItemEvent persistence
+
+stable bbox exits centered 1.2x placement buffer
+-> TrackStatus.MOVING
+-> bbox centre remains within 5 pixels for 1 second
+-> timed TrackSignal.MOVED with source and destination boxes
+-> StateDecision(PRESENT, MOVED)
+-> permanent item_id resolution
+-> atomic movement event persistence
+
+stable or moving track absent for 2 seconds
+-> TrackSignal.REMOVE
+-> StateDecision(REMOVED, REMOVED)
+-> EventEngine
+-> atomic item-status update + removal event
 ```
 
-Candidates tolerate up to 10 consecutive missed frames and expire on the 11th. Detections
-without a BoT-SORT ID are ignored by lifecycle processing.
+Candidates tolerate up to 15 cumulative missing frames within each two-second confirmation
+attempt. The 16th miss retires the attempt; the next observation starts a fresh attempt.
+Detections without a BoT-SORT ID are ignored. A stable or moving track reappearing with the
+same ID inside the two-second window cancels removal. A returning moving track must complete a
+fresh visible stop-confirmation window. Removal does not delete item history or the event
+engine's provisional association.
 
 ## Persistent-memory foundation
 
@@ -66,20 +89,28 @@ database records meaningful events, never individual frames.
 - Present-item queries include `present` and `occluded`, but exclude `removed`.
 - Store status operations update the item and insert the associated event atomically.
 - Initial item creation and its `ADDED` event can be committed atomically.
-- Twenty-four tests currently pass across detection, tracking, event coordination, and
+- Events now expose nullable `started_at` and `finished_at` timestamps for duration-based
+  events. Store event-writing paths accept complete timezone-aware intervals and reject
+  partial, naive, or reversed intervals.
+- `record_movement()` can persist a valid movement interval while atomically updating the
+  item's `last_seen_at`.
+- Movement events expose nullable JSON `source_box` and `destination_box` coordinates while
+  retaining optional source/destination region fields for future region resolution.
+- Thirty-eight tests currently pass across detection, tracking, event coordination, and
   persistence.
 
 ## Next architecture step
 
-Connect the isolated components to the live loop without collapsing their responsibilities:
+Finish permanent event-engine and persistence tests for timed movement metadata, bbox storage,
+invalid movement signals, and permanent item association. The tracker movement suite and
+state-machine movement test are already permanent. The local database was recreated and the
+complete `ADD` then `MOVED` live demo succeeded on 22 August 2026. `MOVING` remains a temporary
+tracker state; the permanent item remains `PRESENT`.
 
-```text
-frame -> detections -> tracker signals -> state decisions -> event engine -> store
-```
-
-The store, tracker, and event engine must be created once before frame processing. Ordinary
-frames should remain in memory and produce no database write. Database configuration belongs
-in YAML.
+After MOVED, add `RETURNED` interfaces as boilerplate for future ReID. A return means that
+associative memory has resolved a new observation to an existing removed `item_id`; it must
+never be inferred from a temporary BoT-SORT ID alone. Until ReID exists, the RETURNED path
+should be defined but not activated by tracker behavior.
 
 Expected transitions include:
 
@@ -94,8 +125,8 @@ Expected transitions include:
 - Reliable permanent identity association across tracker-ID changes; the event engine's
   current track-to-item dictionary is only a provisional session binding.
 - Recognition, appearance embeddings, and trajectory checks for ID-switch recovery.
-- Missing, occluded, reappeared, removed, returned, and movement signal processing.
-- Placement and relocation-event detection.
+- Connecting RETURNED boilerplate to associative-memory/ReID output.
+- Occlusion and general status-change signal processing.
 - High-quality evidence crop selection.
 - Object-location queries.
 - Schema migrations beyond the initial local MVP.

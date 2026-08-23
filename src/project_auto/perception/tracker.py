@@ -1,11 +1,74 @@
 """Track structured detections across consecutive video frames."""
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
+from math import hypot
 from time import monotonic
 from typing import Callable
 
 from project_auto.perception.detector import Detection
+
+
+def _utc_now() -> datetime:
+    """Return a timezone-aware UTC timestamp for persisted lifecycle events."""
+    return datetime.now(timezone.utc)
+
+
+def _make_buffer_box(
+    box: tuple[int, int, int, int],
+    scale: float,
+) -> tuple[float, float, float, float]:
+    """Return a centered buffer scaled from one detection bounding box."""
+    if scale <= 1.0:
+        raise ValueError("movement_buffer_scale must be greater than 1")
+
+    x1, y1, x2, y2 = box
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+    half_buffer_width = (x2 - x1) * scale / 2
+    half_buffer_height = (y2 - y1) * scale / 2
+
+    return (
+        center_x - half_buffer_width,
+        center_y - half_buffer_height,
+        center_x + half_buffer_width,
+        center_y + half_buffer_height,
+    )
+
+
+def _is_box_inside(
+    box: tuple[int, int, int, int],
+    buffer_box: tuple[float, float, float, float],
+) -> bool:
+    """Return whether every edge of a detection is inside its placement buffer."""
+    x1, y1, x2, y2 = box
+    buffer_x1, buffer_y1, buffer_x2, buffer_y2 = buffer_box
+
+    return (
+        x1 >= buffer_x1
+        and y1 >= buffer_y1
+        and x2 <= buffer_x2
+        and y2 <= buffer_y2
+    )
+
+
+def _box_center_displacement(
+    reference_box: tuple[int, int, int, int],
+    current_box: tuple[int, int, int, int],
+) -> float:
+    """Return the Euclidean distance between two bounding-box centers."""
+    reference_x1, reference_y1, reference_x2, reference_y2 = reference_box
+    current_x1, current_y1, current_x2, current_y2 = current_box
+    reference_center_x = (reference_x1 + reference_x2) / 2
+    reference_center_y = (reference_y1 + reference_y2) / 2
+    current_center_x = (current_x1 + current_x2) / 2
+    current_center_y = (current_y1 + current_y2) / 2
+
+    return hypot(
+        current_center_x - reference_center_x,
+        current_center_y - reference_center_y,
+    )
 
 
 class TrackStatus(str, Enum):
@@ -13,6 +76,8 @@ class TrackStatus(str, Enum):
 
     CANDIDATE = "candidate"
     CONFIRMED = "confirmed"
+    STABLE = "stable"
+    MOVING = "moving"
     MISSING = "missing"
 
 
@@ -20,7 +85,11 @@ class TrackSignalType(str, Enum):
     """Meaningful lifecycle signals emitted for downstream decisions."""
 
     ADD = "add"
+    MOVED = "moved"
     REMOVE = "remove"
+    # TODO(ReID): Keep RETURNED emission inactive until associative memory resolves
+    # an observation to a permanent item_id; a tracker ID alone is insufficient.
+    RETURNED = "returned"
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +99,13 @@ class TrackSignal:
     signal_type: TrackSignalType
     track_id: int
     detection: Detection
+    # TODO(ReID): Require this permanent identity when constructing RETURNED;
+    # leave it unset for tracker-only lifecycle signals.
+    item_id: int | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    source_box: tuple[int, int, int, int] | None = None
+    destination_box: tuple[int, int, int, int] | None = None
 
 
 @dataclass(slots=True)
@@ -37,20 +113,31 @@ class _ActiveTrack:
     """Mutable frame-to-frame state for one temporary track."""
 
     detection: Detection
-    seen_frames: int = 1
-    missed_frames: int = 0
+    confirmation_started_at: float
+    candidate_missing_frames: int = 0
     status: TrackStatus = TrackStatus.CANDIDATE
     missing_since: float | None = None
+    status_before_missing: TrackStatus | None = None
+    stable_box: tuple[int, int, int, int] | None = None
+    buffer_box: tuple[float, float, float, float] | None = None
+    movement_started_at: datetime | None = None
+    stability_reference_box: tuple[int, int, int, int] | None = None
+    stopped_since: float | None = None
+    stopped_at: datetime | None = None
 
 
 @dataclass(slots=True)
 class DetectionTracker:
     """Hold lifecycle state for BoT-SORT tracks across video frames."""
 
-    confirmation_frames: int = 30
-    max_missed_frames: int = 10
+    candidate_confirmation_seconds: float = 2.0
+    max_candidate_missing_frames: int = 15
     removal_timeout_seconds: float = 2.0
+    movement_buffer_scale: float = 1.2
+    movement_stop_tolerance_pixels: float = 5.0
+    movement_stopped_confirmation_seconds: float = 1.0
     clock: Callable[[], float] = field(default=monotonic, repr=False)
+    timestamp_clock: Callable[[], datetime] = field(default=_utc_now, repr=False)
     _tracks: dict[int, _ActiveTrack] = field(
         default_factory=dict,
         init=False,
@@ -65,29 +152,56 @@ class DetectionTracker:
             if detection.track_id is not None
         }
 
+    def _check_return(self, detection: Detection) -> None:
+        """Reserve a ReID-backed return check without activating it yet."""
+        # TODO(ReID): Ask associative memory to compare this observation with
+        # permanently identified removed items from the database. Emit RETURNED
+        # with the resolved permanent item_id only when the best match meets the
+        # configured confidence threshold; treat a weak or missing match as new.
+        # Keep database access inside the ReID/memory component, not this tracker.
+        pass
+
     def _update_add_lifecycle(
         self,
         track_id: int,
         detection: Detection,
+        now: float,
     ) -> TrackSignal | None:
-        """Update one visible track and emit ADD when its candidate is confirmed."""
+        """Emit ADD after one visible candidate completes its timed attempt."""
         active_track = self._tracks.get(track_id)
         if active_track is None:
-            active_track = _ActiveTrack(detection=detection)
+            active_track = _ActiveTrack(
+                detection=detection,
+                confirmation_started_at=now,
+            )
             self._tracks[track_id] = active_track
-        elif active_track.status in {TrackStatus.CONFIRMED, TrackStatus.MISSING}:
-            self._update_confirmed_track(active_track, detection)
+        elif active_track.status is TrackStatus.MISSING:
+            self._restore_missing_track(active_track, detection)
             return None
+        elif active_track.status is TrackStatus.STABLE:
+            self._update_stable_track(active_track, detection)
+            return None
+        elif active_track.status is TrackStatus.MOVING:
+            return self._update_moving_track(
+                track_id,
+                active_track,
+                detection,
+                now,
+            )
         else:
             active_track.detection = detection
-            active_track.missed_frames = 0
-            active_track.seen_frames += 1
 
         if (
             active_track.status is TrackStatus.CANDIDATE
-            and active_track.seen_frames >= self.confirmation_frames
+            and now - active_track.confirmation_started_at
+            >= self.candidate_confirmation_seconds
         ):
-            active_track.status = TrackStatus.CONFIRMED
+            active_track.status = TrackStatus.STABLE
+            active_track.stable_box = detection.box
+            active_track.buffer_box = _make_buffer_box(
+                detection.box,
+                self.movement_buffer_scale,
+            )
             return TrackSignal(
                 signal_type=TrackSignalType.ADD,
                 track_id=track_id,
@@ -96,16 +210,99 @@ class DetectionTracker:
 
         return None
 
-    @staticmethod
-    def _update_confirmed_track(
+    def _update_stable_track(
+        self,
         active_track: _ActiveTrack,
         detection: Detection,
     ) -> None:
-        """Refresh a confirmed track and cancel any active missing timer."""
+        """Refresh a stable track and begin movement after its buffer is exited."""
         active_track.detection = detection
-        active_track.missed_frames = 0
-        active_track.status = TrackStatus.CONFIRMED
+        if active_track.buffer_box is None:
+            raise ValueError("A stable track requires a placement buffer")
+        if _is_box_inside(detection.box, active_track.buffer_box):
+            return
+
+        active_track.status = TrackStatus.MOVING
+        active_track.movement_started_at = self.timestamp_clock()
+        active_track.stability_reference_box = detection.box
+        active_track.stopped_since = None
+        active_track.stopped_at = None
+
+    def _update_moving_track(
+        self,
+        track_id: int,
+        active_track: _ActiveTrack,
+        detection: Detection,
+        now: float,
+    ) -> TrackSignal | None:
+        """Emit MOVED after a visible moving track remains stopped long enough."""
+        reference_box = active_track.stability_reference_box
+        if reference_box is None:
+            raise ValueError("A moving track requires a stability reference box")
+
+        active_track.detection = detection
+        displacement = _box_center_displacement(reference_box, detection.box)
+        if displacement > self.movement_stop_tolerance_pixels:
+            active_track.stability_reference_box = detection.box
+            active_track.stopped_since = None
+            active_track.stopped_at = None
+            return None
+
+        if active_track.stopped_since is None:
+            active_track.stopped_since = now
+            active_track.stopped_at = self.timestamp_clock()
+            return None
+
+        elapsed = now - active_track.stopped_since
+        if elapsed < self.movement_stopped_confirmation_seconds:
+            return None
+        if active_track.movement_started_at is None:
+            raise ValueError("A moving track requires a movement start timestamp")
+        if active_track.stopped_at is None:
+            raise ValueError("A stopped track requires a stop timestamp")
+        if active_track.stable_box is None:
+            raise ValueError("A moving track requires a source placement box")
+
+        signal = TrackSignal(
+            signal_type=TrackSignalType.MOVED,
+            track_id=track_id,
+            detection=detection,
+            started_at=active_track.movement_started_at,
+            finished_at=active_track.stopped_at,
+            source_box=active_track.stable_box,
+            destination_box=detection.box,
+        )
+        active_track.status = TrackStatus.STABLE
+        active_track.stable_box = detection.box
+        active_track.buffer_box = _make_buffer_box(
+            detection.box,
+            self.movement_buffer_scale,
+        )
+        active_track.movement_started_at = None
+        active_track.stability_reference_box = None
+        active_track.stopped_since = None
+        active_track.stopped_at = None
+
+        return signal
+
+    def _restore_missing_track(
+        self,
+        active_track: _ActiveTrack,
+        detection: Detection,
+    ) -> None:
+        """Restore a visible track to the lifecycle state preceding its absence."""
+        restored_status = active_track.status_before_missing or TrackStatus.STABLE
+        active_track.status = restored_status
+        active_track.status_before_missing = None
         active_track.missing_since = None
+
+        if restored_status is TrackStatus.STABLE:
+            self._update_stable_track(active_track, detection)
+        else:
+            active_track.detection = detection
+            active_track.stability_reference_box = detection.box
+            active_track.stopped_since = None
+            active_track.stopped_at = None
 
     def _update_missing_lifecycle(
         self,
@@ -116,12 +313,20 @@ class DetectionTracker:
         active_track = self._tracks[track_id]
 
         if active_track.status is TrackStatus.CANDIDATE:
-            active_track.missed_frames += 1
-            if active_track.missed_frames > self.max_missed_frames:
+            active_track.candidate_missing_frames += 1
+            if (
+                active_track.candidate_missing_frames
+                > self.max_candidate_missing_frames
+            ):
                 del self._tracks[track_id]
             return None
 
-        if active_track.status is TrackStatus.CONFIRMED:
+        if active_track.status in {
+            TrackStatus.CONFIRMED,
+            TrackStatus.STABLE,
+            TrackStatus.MOVING,
+        }:
+            active_track.status_before_missing = active_track.status
             active_track.status = TrackStatus.MISSING
             active_track.missing_since = now
             return None
@@ -143,13 +348,21 @@ class DetectionTracker:
         return signal
 
     def update(self, detections: list[Detection]) -> list[TrackSignal]:
-        """Update candidate tracks and emit ADD once a track is confirmed."""
-        if self.confirmation_frames < 1:
-            raise ValueError("confirmation_frames must be positive")
-        if self.max_missed_frames < 0:
-            raise ValueError("max_missed_frames must be non-negative")
+        """Update track lifecycles and return newly confirmed meaningful signals."""
+        if self.candidate_confirmation_seconds <= 0:
+            raise ValueError("candidate_confirmation_seconds must be positive")
+        if self.max_candidate_missing_frames < 0:
+            raise ValueError("max_candidate_missing_frames must be non-negative")
         if self.removal_timeout_seconds <= 0:
             raise ValueError("removal_timeout_seconds must be positive")
+        if self.movement_buffer_scale <= 1.0:
+            raise ValueError("movement_buffer_scale must be greater than 1")
+        if self.movement_stop_tolerance_pixels < 0:
+            raise ValueError("movement_stop_tolerance_pixels must be non-negative")
+        if self.movement_stopped_confirmation_seconds <= 0:
+            raise ValueError(
+                "movement_stopped_confirmation_seconds must be positive"
+            )
 
         tracked_detections = self._index_detections(detections)
         now = self.clock()
@@ -161,7 +374,7 @@ class DetectionTracker:
                 signals.append(signal)
 
         for track_id, detection in tracked_detections.items():
-            signal = self._update_add_lifecycle(track_id, detection)
+            signal = self._update_add_lifecycle(track_id, detection, now)
             if signal is not None:
                 signals.append(signal)
 

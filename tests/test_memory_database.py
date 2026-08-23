@@ -138,6 +138,43 @@ def test_mark_present_records_only_real_status_changes(store: DatabaseStore) -> 
     assert len(store.get_item_history(item.id)) == 1
 
 
+def test_mark_returned_updates_removed_item_and_records_event(
+    store: DatabaseStore,
+) -> None:
+    item = store.create_item("cup", status=ItemStatus.REMOVED)
+
+    returned_event = store.mark_returned(
+        item.id,
+        source_track_id=19,
+        detector_confidence=0.88,
+    )
+
+    saved_item = store.get_item(item.id)
+    assert saved_item is not None
+    assert saved_item.status is ItemStatus.PRESENT
+    assert returned_event.item_id == item.id
+    assert returned_event.event_type is ItemEventType.RETURNED
+    assert returned_event.source_track_id == 19
+    assert returned_event.detector_confidence == pytest.approx(0.88)
+    assert [event.id for event in store.get_item_history(item.id)] == [returned_event.id]
+
+
+def test_mark_returned_rejects_item_that_is_not_removed(
+    store: DatabaseStore,
+) -> None:
+    item = store.create_item("cup", status=ItemStatus.PRESENT)
+
+    with pytest.raises(ValueError, match=f"Item {item.id} is not removed"):
+        store.mark_returned(item.id)
+
+    assert store.get_item_history(item.id) == []
+
+
+def test_mark_returned_rejects_unknown_item(store: DatabaseStore) -> None:
+    with pytest.raises(ValueError, match="Item 999 does not exist"):
+        store.mark_returned(999)
+
+
 def test_status_functions_reject_unknown_item(store: DatabaseStore) -> None:
     with pytest.raises(ValueError, match="Item 999 does not exist"):
         store.mark_removed(999)

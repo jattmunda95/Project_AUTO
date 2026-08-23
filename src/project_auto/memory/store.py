@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,33 @@ class DatabaseStore:
     def create_schema(self) -> None:
         """Create any missing Project AUTO database tables."""
         Base.metadata.create_all(self.engine)
+
+    @staticmethod
+    def _validate_event_interval(
+        started_at: datetime | None,
+        finished_at: datetime | None,
+    ) -> None:
+        """Validate an optional complete, timezone-aware event interval."""
+        if (started_at is None) is not (finished_at is None):
+            raise ValueError("started_at and finished_at must be provided together")
+        if started_at is None or finished_at is None:
+            return
+        if started_at.utcoffset() is None or finished_at.utcoffset() is None:
+            raise ValueError("Event interval timestamps must be timezone-aware")
+        if started_at > finished_at:
+            raise ValueError("started_at must not be later than finished_at")
+
+    @staticmethod
+    def _serialize_box(
+        box: tuple[int, int, int, int] | None,
+    ) -> list[int] | None:
+        """Convert an optional bbox tuple into JSON-compatible coordinates."""
+        if box is None:
+            return None
+        if len(box) != 4:
+            raise ValueError("A bounding box must contain four coordinates")
+
+        return list(box)
 
     def create_item(
         self,
@@ -94,23 +122,32 @@ class DatabaseStore:
         self,
         item_id: int,
         event_type: ItemEventType,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
         source_track_id: int | None = None,
         detector_confidence: float | None = None,
         source_region: str | None = None,
         destination_region: str | None = None,
+        source_box: tuple[int, int, int, int] | None = None,
+        destination_box: tuple[int, int, int, int] | None = None,
         object_image_path: str | None = None,
         context_image_path: str | None = None,
         video_clip_path: str | None = None,
         notes: str | None = None,
     ) -> ItemEvent:
         """Record one meaningful event against a permanent item identity."""
+        self._validate_event_interval(started_at, finished_at)
         event = ItemEvent(
             item_id=item_id,
             event_type=event_type,
+            started_at=started_at,
+            finished_at=finished_at,
             source_track_id=source_track_id,
             detector_confidence=detector_confidence,
             source_region=source_region,
             destination_region=destination_region,
+            source_box=self._serialize_box(source_box),
+            destination_box=self._serialize_box(destination_box),
             object_image_path=object_image_path,
             context_image_path=context_image_path,
             video_clip_path=video_clip_path,
@@ -258,11 +295,44 @@ class DatabaseStore:
 
         return event
 
+    def mark_returned(
+        self,
+        item_id: int,
+        source_track_id: int | None = None,
+        detector_confidence: float | None = None,
+    ) -> ItemEvent:
+        """Mark a permanently identified removed item as returned."""
+        # TODO(ReID): Call this only after associative memory resolves the
+        # observation to item_id above its configured confidence threshold.
+        with self.session_factory() as session:
+            item = session.get(Item, item_id)
+            if item is None:
+                raise ValueError(f"Item {item_id} does not exist")
+            if item.status is not ItemStatus.REMOVED:
+                raise ValueError(f"Item {item_id} is not removed")
+
+            item.status = ItemStatus.PRESENT
+            item.last_seen_at = utc_now()
+            returned_event = ItemEvent(
+                item=item,
+                event_type=ItemEventType.RETURNED,
+                source_track_id=source_track_id,
+                detector_confidence=detector_confidence,
+            )
+            session.add(returned_event)
+            session.commit()
+
+        return returned_event
+
     def record_movement(
         self,
         item_id: int,
-        source_region: str,
-        destination_region: str,
+        source_region: str | None = None,
+        destination_region: str | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        source_box: tuple[int, int, int, int] | None = None,
+        destination_box: tuple[int, int, int, int] | None = None,
         source_track_id: int | None = None,
         detector_confidence: float | None = None,
         object_image_path: str | None = None,
@@ -270,7 +340,10 @@ class DatabaseStore:
         video_clip_path: str | None = None,
         notes: str | None = None,
     ) -> ItemEvent:
-        """Record a visible item moving between regions without changing its status."""
+        """Record a visible relocation without changing the item's status."""
+        self._validate_event_interval(started_at, finished_at)
+        if (source_box is None) is not (destination_box is None):
+            raise ValueError("source_box and destination_box must be provided together")
         with self.session_factory() as session:
             item = session.get(Item, item_id)
             if item is None:
@@ -280,10 +353,14 @@ class DatabaseStore:
             event = ItemEvent(
                 item=item,
                 event_type=ItemEventType.MOVED,
+                started_at=started_at,
+                finished_at=finished_at,
                 source_track_id=source_track_id,
                 detector_confidence=detector_confidence,
                 source_region=source_region,
                 destination_region=destination_region,
+                source_box=self._serialize_box(source_box),
+                destination_box=self._serialize_box(destination_box),
                 object_image_path=object_image_path,
                 context_image_path=context_image_path,
                 video_clip_path=video_clip_path,

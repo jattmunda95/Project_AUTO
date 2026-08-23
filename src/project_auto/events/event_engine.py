@@ -1,7 +1,11 @@
 """Coordinate state decisions with persistent item and event storage."""
 
 from project_auto.memory.models import Item, ItemEvent, ItemEventType
-from project_auto.memory.state_machine import StateDecision, decide_track_signal
+from project_auto.memory.state_machine import (
+    StateDecision,
+    decide_return_signal,
+    decide_track_signal,
+)
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.tracker import TrackSignal, TrackSignalType
 
@@ -23,6 +27,8 @@ class EventEngine:
 
         if decision.event_type is ItemEventType.ADDED:
             return self.process_add(signal, decision)
+        if decision.event_type is ItemEventType.MOVED:
+            return self.process_move(signal, decision)
         if decision.event_type is ItemEventType.REMOVED:
             return self.process_remove(signal, decision)
 
@@ -53,6 +59,37 @@ class EventEngine:
 
         return item, added_event
 
+    def process_move(
+        self,
+        signal: TrackSignal,
+        decision: StateDecision,
+    ) -> ItemEvent:
+        """Persist one completed relocation for an associated permanent item."""
+        if signal.signal_type is not TrackSignalType.MOVED:
+            raise ValueError("process_move requires a MOVED track signal")
+        if decision.event_type is not ItemEventType.MOVED:
+            raise ValueError("process_move requires a MOVED state decision")
+        if signal.detection.track_id != signal.track_id:
+            raise ValueError("Signal and detection track IDs must match")
+        if signal.started_at is None or signal.finished_at is None:
+            raise ValueError("A MOVED signal requires start and finish timestamps")
+        if signal.source_box is None or signal.destination_box is None:
+            raise ValueError("A MOVED signal requires source and destination boxes")
+
+        item_id = self._item_ids_by_track_id.get(signal.track_id)
+        if item_id is None:
+            raise ValueError(f"Track {signal.track_id} is not associated with an item")
+
+        return self.store.record_movement(
+            item_id=item_id,
+            started_at=signal.started_at,
+            finished_at=signal.finished_at,
+            source_box=signal.source_box,
+            destination_box=signal.destination_box,
+            source_track_id=signal.track_id,
+            detector_confidence=signal.detection.confidence,
+        )
+
     def process_remove(
         self,
         signal: TrackSignal,
@@ -77,3 +114,22 @@ class EventEngine:
         )
 
         return removed_event
+
+    def process_return(self, signal: TrackSignal) -> ItemEvent:
+        """Persist an explicitly ReID-resolved return without activating dispatch."""
+        decision = decide_return_signal(signal)
+        if decision.event_type is not ItemEventType.RETURNED:
+            raise ValueError("process_return requires a RETURNED state decision")
+        if signal.detection.track_id != signal.track_id:
+            raise ValueError("Signal and detection track IDs must match")
+        if signal.item_id is None:
+            raise ValueError("A RETURNED signal requires a permanent item_id")
+
+        # TODO(ReID): Once associative memory is implemented, call this method
+        # from its confident-match path and then establish the new provisional
+        # track-to-item association for subsequent lifecycle signals.
+        return self.store.mark_returned(
+            item_id=signal.item_id,
+            source_track_id=signal.track_id,
+            detector_confidence=signal.detection.confidence,
+        )

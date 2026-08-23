@@ -5,7 +5,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import DateTime, Enum as SqlEnum, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Enum as SqlEnum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -114,10 +124,20 @@ class ItemEvent(Base):
         default=utc_now,
         index=True,
     )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     source_track_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     detector_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     source_region: Mapped[str | None] = mapped_column(String(200), nullable=True)
     destination_region: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_box: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    destination_box: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
     object_image_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     context_image_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     video_clip_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)

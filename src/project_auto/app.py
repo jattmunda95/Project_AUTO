@@ -22,6 +22,8 @@ def run_app() -> None:
 
     with camera_config_path.open(encoding="utf-8") as config_file:
         camera_settings = yaml.safe_load(config_file)
+    with perception_config_path.open(encoding="utf-8") as config_file:
+        perception_settings = yaml.safe_load(config_file)
     with table_config_path.open(encoding="utf-8") as config_file:
         table_settings = yaml.safe_load(config_file)
 
@@ -32,7 +34,26 @@ def run_app() -> None:
         store.create_schema()
         camera = Camera(CameraConfig(**camera_settings))
         detector = YoloDetector(perception_config_path)
-        tracker = DetectionTracker()
+        tracker = DetectionTracker(
+            candidate_confirmation_seconds=float(
+                perception_settings["candidate_confirmation_seconds"]
+            ),
+            max_candidate_missing_frames=int(
+                perception_settings["max_candidate_missing_frames"]
+            ),
+            removal_timeout_seconds=float(
+                perception_settings["removal_timeout_seconds"]
+            ),
+            movement_buffer_scale=float(
+                perception_settings["movement_buffer_scale"]
+            ),
+            movement_stop_tolerance_pixels=float(
+                perception_settings["movement_stop_tolerance_pixels"]
+            ),
+            movement_stopped_confirmation_seconds=float(
+                perception_settings["movement_stopped_confirmation_seconds"]
+            ),
+        )
         event_engine = EventEngine(store)
 
         with camera:
