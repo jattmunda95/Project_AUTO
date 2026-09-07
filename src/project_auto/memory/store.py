@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import fsum, hypot, isfinite
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,56 @@ class DatabaseStore:
     def create_schema(self) -> None:
         """Create any missing Project AUTO database tables."""
         Base.metadata.create_all(self.engine)
+
+    def update_item_prototype(self, item_id: int) -> list[float] | None:
+        """Save and return the unit-length mean of an item's reference vectors.
+
+        References are expected to be normalized by the embedding extractor and
+        use identical model/preprocessing settings. No references clears the
+        prototype. Invalid references raise ValueError without changing it.
+        Call explicitly after reference changes; this is not an automatic hook.
+        """
+        with self.session_factory() as session:
+            item = session.get(Item, item_id)
+            if item is None:
+                raise ValueError(f"Item {item_id} does not exist")
+
+            references = item.embeddings
+            prototype: list[float] | None = None
+            if references:
+                if len({reference.model_name for reference in references}) != 1:
+                    raise ValueError("Cannot average embeddings from different models")
+
+                vectors = [reference.embedding for reference in references]
+                dimension: int | None = None
+                for vector in vectors:
+                    if not isinstance(vector, list) or not vector:
+                        raise ValueError("Embeddings must be nonempty vectors")
+                    if dimension is None:
+                        dimension = len(vector)
+                    if len(vector) != dimension:
+                        raise ValueError("Embeddings must have matching dimensions")
+                    if any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not isfinite(value)
+                        for value in vector
+                    ):
+                        raise ValueError("Embeddings must contain finite numbers")
+                    if hypot(*vector) == 0.0:
+                        raise ValueError("Embeddings must have nonzero length")
+
+                count = len(vectors)
+                mean = [fsum(value / count for value in column) for column in zip(*vectors)]
+                norm = hypot(*mean)
+                if not isfinite(norm) or norm == 0.0:
+                    raise ValueError("The mean embedding must have finite, nonzero length")
+                prototype = [value / norm for value in mean]
+
+            item.item_prototype = prototype
+            session.commit()
+
+        return prototype
 
     @staticmethod
     def _validate_event_interval(

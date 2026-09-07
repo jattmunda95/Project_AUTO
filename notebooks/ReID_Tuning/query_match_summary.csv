@@ -1,0 +1,11 @@
+query_identity,query_image,predicted_identity,matched_reference,best_similarity,top_k_mean,second_identity,second_similarity,second_top_k_mean,margin,correct
+black_mug_01,black_mug_q1.jpg,black_mug_01,IMG_9159.jpg,0.5326,0.4476,white_mug_01,0.4421,0.4198,0.0279,True
+black_mug_01,black_mug_q2.jpg,black_mug_01,IMG_9159.jpg,0.2169,0.1850,white_mug_01,0.1774,0.1658,0.0192,True
+book_01,book_q1.jpg,book_01,IMG_9179.jpg,0.5142,0.4205,white_mug_01,0.1836,0.1304,0.2901,True
+book_01,book_q2.jpg,book_01,IMG_9179.jpg,0.7672,0.4676,white_mug_01,0.2838,0.1871,0.2805,True
+unknown,IMG_9189.jpg,book_01,IMG_9179.jpg,0.2562,0.2268,white_mug_01,0.0955,0.0916,0.1352,
+unknown,IMG_9190.jpg,book_01,IMG_9177.jpg,0.5184,0.3322,white_headphone_01,0.2189,0.1898,0.1425,
+white_headphone_01,headphone_q1.jpg,white_headphone_01,IMG_9173.jpg,0.2487,0.1870,book_01,0.2350,0.1595,0.0275,True
+white_headphone_01,headphone_q2.jpg,white_headphone_01,IMG_9170.jpg,0.4085,0.3090,white_mug_01,0.1917,0.1573,0.1517,True
+white_mug_01,IMG_9186.jpg,white_mug_01,IMG_9183.jpg,0.6793,0.6389,black_mug_01,0.6890,0.6204,0.0185,True
+white_mug_01,IMG_9187.jpg,white_mug_01,IMG_9183.jpg,0.8670,0.7349,black_mug_01,0.7910,0.6388,0.0961,True

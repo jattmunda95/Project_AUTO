@@ -54,12 +54,21 @@ engine's provisional association.
 
 ## Persistent-memory foundation
 
-`memory/models.py` defines two SQLAlchemy tables:
+`memory/models.py` defines three SQLAlchemy tables (existing databases need migration):
 
 ### `items`
 
 One row represents one permanent physical object. `Item.id` is Project AUTO's durable
 identity and must not be replaced by a tracker ID.
+The nullable JSON `item_prototype` is a normalized mean of compatible reference vectors.
+Its calculation exists in store.py but reference changes do not trigger it automatically.
+
+### `item_embeddings`
+
+Each row stores one reference vector, permanent item_id, model_name, optional crop path,
+and creation timestamp. Deleting the item cascades to its references. Reference-saving and
+gallery-loading methods are still pending, as is explicit prototype model/preprocessing
+provenance. The prototype must not combine incompatible embedding spaces.
 
 Item states are:
 
@@ -96,21 +105,51 @@ database records meaningful events, never individual frames.
   item's `last_seen_at`.
 - Movement events expose nullable JSON `source_box` and `destination_box` coordinates while
   retaining optional source/destination region fields for future region resolution.
-- Thirty-eight tests currently pass across detection, tracking, event coordination, and
-  persistence.
+- See TASKS.md for recorded verification and the distinction between model tests, synthetic
+  checks, and unverified real-image recognition.
 
 ## Next architecture step
 
-Finish permanent event-engine and persistence tests for timed movement metadata, bbox storage,
-invalid movement signals, and permanent item association. The tracker movement suite and
-state-machine movement test are already permanent. The local database was recreated and the
-complete `ADD` then `MOVED` live demo succeeded on 22 August 2026. `MOVING` remains a temporary
-tracker state; the permanent item remains `PRESENT`.
+The following architecture is agreed but deferred; the live loop still dispatches tracker
+ADD directly to item creation. RETURNED interfaces exist but remain disconnected.
 
-After MOVED, add `RETURNED` interfaces as boilerplate for future ReID. A return means that
-associative memory has resolved a new observation to an existing removed `item_id`; it must
-never be inferred from a temporary BoT-SORT ID alone. Until ReID exists, the RETURNED path
-should be defined but not activated by tracker behavior.
+```text
+Tracker confirmation -> app/coordinator identity request
+-> scene_processor: detection crop -> SAM keep-mask -> DINOv2 -> gallery comparison
+-> NEW / EXISTING / PENDING decision
+-> coordinator + event layer: confirmation and current item status
+-> ADD / RETURNED / association only / retry
+```
+
+The app chooses when to call scene processing. The scene processor does not inspect tracker
+stages, and the tracker never calls scene processing, models, or persistence. Start comparison
+after confirmation to avoid inference on transient candidates, but before permanent-item
+creation. The current ADD signal denotes temporal confirmation, not proof of a new identity.
+
+NEW creates an item with ADD. EXISTING associates its permanent ID: only REMOVED produces
+RETURNED; PRESENT produces no add/return event. Define OCCLUDED restoration separately.
+Unusable crops/masks produce PENDING, not NEW. Retain retry state after the one-time
+confirmation, retry on visible frames, and cancel on retirement. Handle unresolved movement
+and removal without writing against unknown identities. Reject conflicting simultaneous
+claims on an item and prevent stale decisions from binding reused track IDs.
+
+Scene processing will crop each detection and prompt SAM with crop-local coordinates.
+The segmenter already accepts BGR images and boxes, returns frame-sized masks, and inverts
+the selected raw mask to preserve the user's Colab convention. True means retain; replace
+False pixels with the configured background colour. Real mask quality remains unverified.
+Use identical preprocessing for reference and query embeddings.
+
+The coordinator holds a gallery loaded by store.py and passes it to DB-agnostic ReID without
+copying/reloading on each call. Refresh after reference/eligibility changes. The matcher
+currently scores individual references using top-k means; prototype search is not implemented.
+
+For a new permanent item, retain the initial usable embedding and collect five additional
+quality crops at configured intervals. Save references through the store and update the
+prototype after each save, ideally atomically. Six is a YAML target, not a requirement for
+identity creation: keep partial collections and resume only after re-establishing identity.
+The coordinator owns capture counts/timing; scene processing owns image preparation and
+matching. Models load once. No per-frame persistence. Live activation requires schema
+migration, standalone tests, and real-image evaluation first.
 
 Expected transitions include:
 

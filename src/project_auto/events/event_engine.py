@@ -125,9 +125,9 @@ class EventEngine:
         if signal.item_id is None:
             raise ValueError("A RETURNED signal requires a permanent item_id")
 
-        # TODO(ReID): Once associative memory is implemented, call this method
-        # from its confident-match path and then establish the new provisional
-        # track-to-item association for subsequent lifecycle signals.
+        # TODO(identity): Coordinator calls only for a confirmed, resolved REMOVED item.
+        # Establish the track-to-item binding after successful persistence; guard
+        # duplicate visible claims. PRESENT matches need association only, not RETURNED.
         return self.store.mark_returned(
             item_id=signal.item_id,
             source_track_id=signal.track_id,

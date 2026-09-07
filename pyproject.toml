@@ -12,6 +12,13 @@ dependencies = [
     "SQLAlchemy>=2.0,<3.0",
 ]
 
+[project.optional-dependencies]
+reid = [
+    "torch",
+    "transformers",
+    "Pillow",
+]
+
 [project.scripts]
 project-auto = "project_auto.main:main"
 

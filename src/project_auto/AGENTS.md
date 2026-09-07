@@ -75,9 +75,14 @@ After modifying code:
 
 ## Current priority
 
-Follow the `Current task` section in `TASKS.md`. Finish permanent event-engine and persistence
-coverage for the implemented `MOVED` lifecycle, then add ReID-ready `RETURNED` boilerplate
-without pretending temporary tracker IDs establish permanent identity. Movement events must
-reference the permanent `item_id`; keep `source_track_id` as optional diagnostic metadata
-only. The local SQLite database was recreated with the duration and bbox columns, and the
-`ADD`/`MOVED` live demo succeeded on 22 August 2026.
+Follow the `Current task` section in `TASKS.md`. Scene processing and live identity integration
+are deferred until explicitly resumed. Standalone ReID, SAM2 segmentation, embedding models,
+and prototype calculation exist; reliable identity recognition is not verified.
+
+The app/coordinator must request stage-blind scene processing after tracker confirmation and
+before permanent-item creation. Never call scene processing, SAM, ReID, or the database from
+the tracker. Preserve pending retries for unusable observations. The event layer distinguishes
+new identities (ADD), matched removed items (RETURNED), and already-present associations.
+Keep RETURNED disconnected until verified, and preserve the user's inverted SAM keep-mask.
+See PROJECT_CONTEXT.md for reference collection and gallery ownership. Migrate the embedding
+and prototype schema before live use; create_all() does not alter existing tables.

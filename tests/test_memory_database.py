@@ -7,7 +7,7 @@ from sqlalchemy import Engine, create_engine, event, inspect, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session, sessionmaker
 
-from project_auto.memory.models import Base, Item, ItemEvent, ItemEventType, ItemStatus
+from project_auto.memory.models import Base, Item, ItemEmbedding, ItemEvent, ItemEventType, ItemStatus
 from project_auto.memory.store import DatabaseStore
 
 
@@ -41,9 +41,51 @@ def store(engine: Engine) -> DatabaseStore:
 def test_schema_creates_required_tables_and_composite_index(engine: Engine) -> None:
     database_inspector = inspect(engine)
 
-    assert set(database_inspector.get_table_names()) == {"items", "item_events"}
+    assert set(database_inspector.get_table_names()) == {"items", "item_events", "item_embeddings"}
     event_indexes = {index["name"] for index in database_inspector.get_indexes("item_events")}
     assert "ix_item_events_item_id_occurred_at" in event_indexes
+
+
+def test_item_embeddings_round_trip_and_orphan_removal(engine: Engine) -> None:
+    with Session(engine) as session:
+        item = Item(class_name="cup")
+        item.embeddings = [
+            ItemEmbedding(model_name="test-model", embedding=[1.0, 0.0]),
+            ItemEmbedding(
+                model_name="test-model", embedding=[0.6, 0.8], object_image_path="crops/cup.jpg"
+            ),
+        ]
+        session.add(item)
+        session.commit()
+        item_id = item.id
+
+    with Session(engine) as session:
+        item = session.get(Item, item_id)
+        references = sorted(item.embeddings, key=lambda reference: reference.id)
+        assert len(references) == 2
+        assert references[0].embedding == [1.0, 0.0]
+        assert references[0].object_image_path is None
+        assert references[1].embedding == [0.6, 0.8]
+        assert references[1].object_image_path == "crops/cup.jpg"
+        assert all(reference.item is item for reference in references)
+        assert all(reference.created_at is not None for reference in references)
+        removed_id = references[0].id
+        item.embeddings.remove(references[0])
+        session.commit()
+        assert session.get(ItemEmbedding, removed_id) is None
+
+    # A fresh session leaves the collection unloaded, exercising database cascade.
+    with Session(engine) as session:
+        session.delete(session.get(Item, item_id))
+        session.commit()
+        assert list(session.scalars(select(ItemEmbedding))) == []
+
+
+def test_embedding_rejects_unknown_permanent_item(engine: Engine) -> None:
+    with Session(engine) as session:
+        session.add(ItemEmbedding(item_id=999, model_name="test-model", embedding=[1.0, 0.0]))
+        with pytest.raises(IntegrityError):
+            session.commit()
 
 
 def test_item_and_event_relationship_works_both_directions(engine: Engine) -> None:

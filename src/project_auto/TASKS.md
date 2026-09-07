@@ -2,26 +2,62 @@
 
 ## Current task
 
-Implement associative memory/ReID one explicitly approved feature at a time:
+Prepare the next identity architecture one explicitly approved feature at a time.
+Implementation of scene processing and live integration is deferred for now.
 
-1. Add a standalone associative-memory/ReID interface:
-   - accept a detection and its object crop;
-   - search eligible permanently identified items without mutating tracker or database state;
-   - return a permanent `item_id`, similarity score, and acceptance decision;
-   - use a configurable confidence threshold;
-   - keep the interface disconnected from `RETURNED`, tracker emission, and the live app until
-     its behavior is implemented and verified.
+- The app/coordinator reacts to tracker confirmation and calls a stage-blind scene processor.
+  The tracker must never call SAM, ReID, the scene processor, or the database.
+- Compare after confirmation, before the existing ADD path creates a permanent item.
+  Short-lived candidates create neither items nor references.
+- Scene processing prepares a detection crop, applies SAM's inverted keep-mask, embeds it,
+  and returns a proposed NEW, EXISTING, or PENDING identity decision with source_track_id,
+  optional permanent item_id, and similarity. These result types are not implemented yet.
+- The event layer combines confirmation, identity, and current database status: NEW -> ADD;
+  EXISTING + REMOVED -> RETURNED; EXISTING + PRESENT -> association only. Define OCCLUDED
+  restoration separately; an existing match alone must never imply RETURNED.
+- The coordinator retains pending decisions and retries on later visible frames because
+  confirmation is a one-time signal. Cancel on retirement and guard against reused track IDs.
+  Define handling of movement/removal signals while identity remains unresolved.
+- Prevent two visible tracks from claiming the same permanent item.
 
 ## Next
 
-- Implement crop and embedding storage for permanent identities.
-- Implement and verify ReID candidate matching.
-- Connect the `RETURNED` boilerplate to ReID output.
+- Migrate existing SQLite data for item_embeddings and items.item_prototype before live use;
+  create_all() does not add columns to existing tables. Preserve existing data.
+- Add validated reference saving and gallery loading in store.py. Load once, pass the gallery
+  by reference to matching, and refresh it when embeddings or eligibility change.
+- Track model/preprocessing compatibility, including prototype provenance; never mix models
+  or masked and unmasked references. Gallery eligibility is metadata filtering, not vector search.
+- Implement scene_processor.py independently and test identity decisions before live wiring.
+- Keep the first usable embedding for a new item, then capture five more suitable, spaced
+  references against that permanent ID. Update the prototype after each save; fewer than six
+  remain useful. Stop on disappearance and resume only after identity is resolved again.
+- Put capture count (initial target six), interval, quality rules, SAM model/device, and
+  background colour in YAML. Do not save per-frame references or database observations.
+- Verify real SAM polarity/quality and DINOv2 matching. Preserve the requested inverted mask
+  convention until explicitly changed. Current checks are synthetic, not accuracy validation.
+- Add permanent tests for prototype calculation and segmentation; evaluate prototype matching
+  versus existing reference top-k matching before adding prototype-based shortlisting.
+- Replace direct confirmation-to-ADD dispatch only after the standalone pieces are verified;
+  connect RETURNED through the coordinator/event layer, never through tracker inference.
 - Implement remaining occlusion/status-change behavior.
 - Save high-quality object crops and context evidence.
 - Add object-location queries.
 
 ## Completed
+
+- Standalone DINOv2 ReID matcher and configs/reid.yaml; synthetic matching tests implemented.
+  The optional reid dependency group declares torch, transformers, and Pillow.
+- ItemEmbedding model stores permanent-item references, model name, crop path, and timestamp;
+  Item.item_prototype stores a nullable JSON vector. Database model tests cover references.
+- DatabaseStore.update_item_prototype() averages references and normalizes the mean, clears
+  missing references, and rejects invalid/mixed-model inputs. Focused manual checks passed;
+  it is explicitly called, not an automatic reference-save hook.
+- Standalone SAM2 segmenter uses Transformers, box prompts, BGR-to-RGB conversion, and
+  frame-sized masks. Selected raw masks are inverted by user request; True means retain.
+  Mocked checks passed; real weights, latency, and segmentation accuracy remain unverified.
+- Last recorded full test run: 62 passed before later prototype/segmenter changes. Subsequent
+  focused checks passed; this is historical verification, not a new full-suite run.
 
 - Project structure and dependencies established.
 - Basic webcam capture implemented and verified.
@@ -107,7 +143,7 @@ Implement associative memory/ReID one explicitly approved feature at a time:
     association, and `app.py`;
   - focused tests cover decisions, permanent identity requirements, persistence, metadata,
     invalid item states, unknown items, and mismatched tracker IDs.
-- The full suite passes with 46 tests.
+- The pre-ReID lifecycle suite passed with 46 tests.
 
 ## Not implemented yet
 
@@ -116,8 +152,8 @@ Implement associative memory/ReID one explicitly approved feature at a time:
 - Permanent event-engine `MOVED` tests and permanent store interval/bbox validation tests have
   not been added yet; the behavior itself is implemented, and direct integration, persistence,
   and live-demo checks pass.
-- Future existing databases will require migration when schemas change because `create_all()`
-  does not alter existing tables; the current local database has been recreated successfully.
+- The new embedding/prototype schema has not been migrated into the local database in this
+  work; the earlier database recreation covered lifecycle fields only.
 - `RETURNED` activation is not implemented and must remain inactive until ReID reliably
   resolves a detection to a permanent `item_id`.
 - Occlusion and general status-change tracker behavior are not implemented.

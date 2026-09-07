@@ -81,6 +81,11 @@ class Item(Base):
         index=True,
     )
     identity_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Normalized mean of compatible reference embeddings; maintained by the store.
+    # Replace the list when updating it; in-place JSON edits are not tracked.
+    item_prototype: Mapped[list[float] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -89,6 +94,11 @@ class Item(Base):
     )
 
     events: Mapped[list[ItemEvent]] = relationship(
+        back_populates="item",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    embeddings: Mapped[list[ItemEmbedding]] = relationship(
         back_populates="item",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -105,6 +115,27 @@ class Item(Base):
             f"Item(id={self.id!r}, class_name={self.class_name!r}, "
             f"display_name={self.display_name!r}, status={status!r})"
         )
+
+
+class ItemEmbedding(Base):
+    """One reference embedding for a permanent item, stored as a JSON vector.
+
+    References must use the same model and preprocessing before comparison or
+    averaging. Vector validation and prototype updates belong in the store layer.
+    Replace the embedding list when updating it; in-place JSON edits are not tracked.
+    """
+
+    __tablename__ = "item_embeddings"
+    __table_args__ = (Index("ix_item_embeddings_item_id_model_name", "item_id", "model_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"))
+    model_name: Mapped[str] = mapped_column(String(200))
+    embedding: Mapped[list[float]] = mapped_column(JSON(none_as_null=True))
+    object_image_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    item: Mapped[Item] = relationship(back_populates="embeddings")
 
 
 class ItemEvent(Base):

@@ -1,6 +1,7 @@
 README.md
 pyproject.toml
 src/project_auto/__init__.py
+src/project_auto/app.py
 src/project_auto/main.py
 src/project_auto.egg-info/PKG-INFO
 src/project_auto.egg-info/SOURCES.txt
@@ -13,6 +14,7 @@ src/project_auto/display/viewer.py
 src/project_auto/events/event_engine.py
 src/project_auto/memory/models.py
 src/project_auto/memory/regions.py
+src/project_auto/memory/reid.py
 src/project_auto/memory/state_machine.py
 src/project_auto/memory/store.py
 src/project_auto/perception/detector.py
@@ -22,5 +24,8 @@ src/project_auto/utils/drawing.py
 src/project_auto/utils/logging.py
 tests/test_detector.py
 tests/test_event_engine.py
+tests/test_memory_database.py
 tests/test_regions.py
+tests/test_reid.py
 tests/test_state_machine.py
+tests/test_tracker.py

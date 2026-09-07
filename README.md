@@ -11,8 +11,9 @@ were last placed on a table.
 - SQLAlchemy/SQLite models for permanent items and meaningful item events.
 - Database operations for item creation, history, movement, and status changes.
 
-Tracking, identity association, the state machine, automatic event detection, and the query
-interface are not yet connected to the live pipeline.
+Tracking, state decisions, and ADD/MOVED/REMOVE persistence are connected to the live pipeline.
+Standalone ReID, SAM2 masking, reference models, and prototype calculation exist but are not
+connected to live identity decisions. Reliable recognition and the query interface remain pending.
 
 ## Setup
 
@@ -24,7 +25,16 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
-Run the live detector:
+Install the optional ReID/SAM dependencies when working on identity processing:
+
+```powershell
+python -m pip install -e ".[reid]"
+```
+
+Existing databases need migration for the embedding/prototype schema before live use;
+`create_all()` does not add `items.item_prototype` to an existing table.
+
+Run the live application after preparing the database schema:
 
 ```powershell
 project-auto
@@ -41,12 +51,17 @@ Press `q` while the camera window is focused to stop it.
 
 ## Current development task
 
-The next feature is the item state machine. See `src/project_auto/TASKS.md` for its exact
-scope and `src/project_auto/PROJECT_CONTEXT.md` for architectural decisions.
+The next architecture uses an app coordinator to request scene processing after tracker
+confirmation, before creating a permanent item. Scene processing prepares crops and returns
+identity decisions; the event layer chooses ADD, RETURNED, or association only. The tracker
+does not call image models or persistence. Implementation of this integration is deferred.
+
+See `src/project_auto/TASKS.md` for scope and `src/project_auto/PROJECT_CONTEXT.md` for
+pending retries, gallery ownership, and collection of six spaced reference crops per new item.
 
 ## Tests
 
-The persistent-memory database suite currently contains 14 passing tests:
+Run the persistent-memory database suite:
 
 ```powershell
 python -m pytest -q tests\test_memory_database.py

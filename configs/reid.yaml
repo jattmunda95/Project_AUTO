@@ -1,0 +1,4 @@
+model_name: facebook/dinov2-base
+device: cpu
+acceptance_threshold: 0.75
+top_k: 3

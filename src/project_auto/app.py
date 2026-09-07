@@ -63,6 +63,9 @@ def run_app() -> None:
                 signals = tracker.update(detections)
 
                 for signal in signals:
+                    # TODO(identity): Gate confirmation/ADD through coordinator-owned scene
+                    # processing before item creation. Keep PENDING retries across frames;
+                    # route resolved identity + DB status through the event layer (TASKS.md).
                     event_engine.process_signal(signal)
 
                 debug_frame = draw_detections(frame, detections)

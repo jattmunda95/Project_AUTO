@@ -154,11 +154,9 @@ class DetectionTracker:
 
     def _check_return(self, detection: Detection) -> None:
         """Reserve a ReID-backed return check without activating it yet."""
-        # TODO(ReID): Ask associative memory to compare this observation with
-        # permanently identified removed items from the database. Emit RETURNED
-        # with the resolved permanent item_id only when the best match meets the
-        # configured confidence threshold; treat a weak or missing match as new.
-        # Keep database access inside the ReID/memory component, not this tracker.
+        # TODO(identity): Retire this inactive stub when coordinator routing is added.
+        # The app requests scene processing after confirmation; this tracker must
+        # never call ReID, SAM, or the database. The event layer resolves RETURNED.
         pass
 
     def _update_add_lifecycle(
