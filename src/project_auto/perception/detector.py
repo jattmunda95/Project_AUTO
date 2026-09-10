@@ -1,4 +1,13 @@
-"""Object detection for frames supplied by the camera."""
+"""Object detection for frames supplied by the camera.
+
+Subfunctions:
+- Load YAML inference settings and load/export the YOLO OpenVINO model.
+- Run Ultralytics tracking and convert predictions into structured Detection records.
+- Return class labels, confidence, frame-coordinate boxes, and temporary track IDs.
+
+No permanent identity assignment, SAM masking, reference capture, or persistence.
+app.py passes these detections to the lifecycle tracker and planned scene processing.
+"""
 
 from __future__ import annotations
 

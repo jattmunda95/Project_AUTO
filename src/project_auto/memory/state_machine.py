@@ -1,4 +1,12 @@
-"""Decide meaningful item-state changes without performing persistence."""
+"""Translate lifecycle signals into item-state and event decisions.
+
+Subfunctions:
+- Map supported tracker signals to state/event decisions without database writes.
+- Validate explicit return signals through the separate return-decision interface.
+
+The event engine persists decisions. Image comparison belongs in ReID/scene processing;
+app.py will coordinate identity resolution before choosing the appropriate event path.
+"""
 
 from __future__ import annotations
 

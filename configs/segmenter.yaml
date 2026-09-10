@@ -1,0 +1,2 @@
+model_name: facebook/sam2-hiera-small
+device: cpu

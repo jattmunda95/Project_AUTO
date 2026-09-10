@@ -1,4 +1,15 @@
-"""Track structured detections across consecutive video frames."""
+"""Track structured detections across consecutive video frames.
+
+Subfunctions:
+- Index detections by temporary source-track ID and maintain candidate/confirmed state.
+- Confirm persistent candidates and emit the current one-time ADD confirmation signal.
+- Detect stable placement, movement, stopping, disappearance, and removal.
+- Return lifecycle signals to app.py without database writes or image inference.
+
+Temporal confirmation does not establish permanent identity. Planned app coordination
+will resolve identity before creating an item. Never call scene_processor, SAM, or ReID
+from this tracker; RETURNED resolution belongs outside it. The return stub is inactive.
+"""
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone

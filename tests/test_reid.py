@@ -116,8 +116,68 @@ def test_matching_preserves_gallery_query_and_crop(
 def test_config_loads_custom_values(tmp_path: Path) -> None:
     config_path = tmp_path / "reid.yaml"
     config_path.write_text(
+        "model_name: local-model\ndevice: cpu\nacceptance_threshold: 0.85\ntop_k: 2\n"
+        "prototype_shortlist_size: 5\n",
+        encoding="utf-8",
+    )
+
+    assert ReidConfig.from_yaml(config_path) == ReidConfig("local-model", "cpu", 0.85, 2, 5)
+
+
+def test_config_defaults_shortlist_size_when_absent(tmp_path: Path) -> None:
+    config_path = tmp_path / "reid.yaml"
+    config_path.write_text(
         "model_name: local-model\ndevice: cpu\nacceptance_threshold: 0.85\ntop_k: 2\n",
         encoding="utf-8",
     )
 
-    assert ReidConfig.from_yaml(config_path) == ReidConfig("local-model", "cpu", 0.85, 2)
+    assert ReidConfig.from_yaml(config_path) == ReidConfig("local-model", "cpu", 0.85, 2, 3)
+
+
+def test_small_gallery_skips_prototype_shortlisting(matcher: ReidMatcher, crop: Image.Image) -> None:
+    matcher.config = ReidConfig("unused-offline-model", "cpu", 0.75, 3, prototype_shortlist_size=3)
+    gallery = [
+        GalleryEntry(101, references(0.9), prototype=np.array([0.0, 1.0])),
+        GalleryEntry(902, references(1.0), prototype=np.array([0.0, 1.0])),
+    ]
+
+    result = matcher.match_candidate(crop, gallery)
+
+    # Gallery size (2) is at or below the shortlist size (3), so every item is scored
+    # directly by reference similarity regardless of prototype similarity.
+    assert result == ReidMatch(902, 1.0, True)
+
+
+def test_prototype_shortlist_excludes_a_closer_reference_behind_a_far_prototype(
+    matcher: ReidMatcher, crop: Image.Image
+) -> None:
+    matcher.config = ReidConfig("unused-offline-model", "cpu", 0.0, 3, prototype_shortlist_size=1)
+    # Query is [1, 0]. Item 902's prototype points away from the query even though
+    # its own reference would otherwise win outright; item 101 and 777 are closer by
+    # prototype, so only the top prototype_shortlist_size=1 survives to reference scoring.
+    # Acceptance threshold is 0.0 here so the test isolates shortlisting, not acceptance.
+    gallery = [
+        GalleryEntry(101, references(0.5), prototype=np.array([1.0, 0.0])),
+        GalleryEntry(777, references(0.4), prototype=np.array([0.9, 0.436])),
+        GalleryEntry(902, references(1.0), prototype=np.array([0.0, 1.0])),
+    ]
+
+    result = matcher.match_candidate(crop, gallery)
+
+    assert result.item_id == 101
+    assert result.similarity == pytest.approx(0.5)
+
+
+def test_prototype_shortlist_always_keeps_entries_without_a_prototype(
+    matcher: ReidMatcher, crop: Image.Image
+) -> None:
+    matcher.config = ReidConfig("unused-offline-model", "cpu", 0.75, 3, prototype_shortlist_size=1)
+    gallery = [
+        GalleryEntry(101, references(0.5), prototype=np.array([1.0, 0.0])),
+        GalleryEntry(777, references(0.4), prototype=np.array([0.9, 0.436])),
+        GalleryEntry(902, references(1.0), prototype=None),
+    ]
+
+    result = matcher.match_candidate(crop, gallery)
+
+    assert result == ReidMatch(902, 1.0, True)

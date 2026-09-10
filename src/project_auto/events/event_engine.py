@@ -1,4 +1,16 @@
-"""Coordinate state decisions with persistent item and event storage."""
+"""Coordinate state decisions with persistent item and event storage.
+
+Implemented subfunctions:
+- Dispatch ADD, MOVED, and REMOVE through state decisions and atomic store operations.
+- Maintain provisional source-track to permanent-item bindings for lifecycle events.
+- Provide an explicit RETURNED path and a no-event association for a matched present item.
+- Bind resolved tracks after successful persistence and reject duplicate visible claims.
+
+The identity coordinator (project_auto.events.coordinator) supplies identity decisions
+from scene processing and calls process_add/process_return/associate_existing_item
+directly; it owns retries and gallery refresh. No crop preparation, model inference, or
+reference-capture scheduling belongs here.
+"""
 
 from project_auto.memory.models import Item, ItemEvent, ItemEventType
 from project_auto.memory.state_machine import (
@@ -17,6 +29,26 @@ class EventEngine:
         """Retain the store and start with no track-to-item associations."""
         self.store = store
         self._item_ids_by_track_id: dict[int, int] = {}
+
+    def item_id_for_track(self, track_id: int) -> int | None:
+        """Return the permanent item currently bound to one visible track, if any."""
+        return self._item_ids_by_track_id.get(track_id)
+
+    def is_item_claimed(self, item_id: int, excluding_track_id: int | None = None) -> bool:
+        """Return whether some other visible track already claims this permanent item."""
+        return any(
+            associated_item_id == item_id and track_id != excluding_track_id
+            for track_id, associated_item_id in self._item_ids_by_track_id.items()
+        )
+
+    def associate_existing_item(self, track_id: int, item_id: int) -> None:
+        """Bind a visible track to an already-present matched item; no event recorded."""
+        if track_id in self._item_ids_by_track_id:
+            raise ValueError(f"Track {track_id} is already associated with an item")
+        if self.is_item_claimed(item_id):
+            raise ValueError(f"Item {item_id} is already claimed by a visible track")
+
+        self._item_ids_by_track_id[track_id] = item_id
 
     def process_signal(
         self,
@@ -116,7 +148,11 @@ class EventEngine:
         return removed_event
 
     def process_return(self, signal: TrackSignal) -> ItemEvent:
-        """Persist an explicitly ReID-resolved return without activating dispatch."""
+        """Persist a scene-processor-resolved return and bind the track afterward.
+
+        The identity coordinator calls this only for a matched REMOVED item; a
+        matched PRESENT item needs associate_existing_item instead, not RETURNED.
+        """
         decision = decide_return_signal(signal)
         if decision.event_type is not ItemEventType.RETURNED:
             raise ValueError("process_return requires a RETURNED state decision")
@@ -124,12 +160,16 @@ class EventEngine:
             raise ValueError("Signal and detection track IDs must match")
         if signal.item_id is None:
             raise ValueError("A RETURNED signal requires a permanent item_id")
+        if signal.track_id in self._item_ids_by_track_id:
+            raise ValueError(f"Track {signal.track_id} is already associated with an item")
+        if self.is_item_claimed(signal.item_id):
+            raise ValueError(f"Item {signal.item_id} is already claimed by a visible track")
 
-        # TODO(identity): Coordinator calls only for a confirmed, resolved REMOVED item.
-        # Establish the track-to-item binding after successful persistence; guard
-        # duplicate visible claims. PRESENT matches need association only, not RETURNED.
-        return self.store.mark_returned(
+        returned_event = self.store.mark_returned(
             item_id=signal.item_id,
             source_track_id=signal.track_id,
             detector_confidence=signal.detection.confidence,
         )
+        self._item_ids_by_track_id[signal.track_id] = signal.item_id
+
+        return returned_event

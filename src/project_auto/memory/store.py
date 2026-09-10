@@ -1,17 +1,38 @@
-"""SQLite persistence for Project AUTO items and meaningful events."""
+"""SQLite persistence for permanent items, lifecycle events, and references.
+
+Implemented subfunctions:
+- Own database sessions, schema creation, and atomic item/event operations.
+- Validate and normalize embeddings; save_item_embedding saves a reference and prototype.
+- update_item_prototype rebuilds the normalized mean, or clears it without references.
+- load_reid_gallery filters by model/status and returns grouped float32 arrays in memory.
+- count_item_embeddings returns the compatible reference count for a permanent item.
+- add_reference_if_needed serializes count/check/save in one transaction against the
+  caller's configured target, keeping prototype updates atomic with accepted writes.
+
+save_item_embedding does NOT enforce a reference-count limit; add_reference_if_needed
+does. The app owns visibility, identity resolution, timing, and gallery refresh. This
+module stores crop paths, not image bytes, and never performs SAM or embedding inference.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
 from math import fsum, hypot, isfinite
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+from numpy.typing import NDArray
 
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from project_auto.memory.models import Base, Item, ItemEvent, ItemEventType, ItemStatus, utc_now
+from project_auto.memory.models import Base, Item, ItemEmbedding, ItemEvent, ItemEventType, ItemStatus, utc_now
+
+
+if TYPE_CHECKING:
+    from project_auto.memory.reid import GalleryEntry
 
 
 class DatabaseStore:
@@ -43,55 +64,191 @@ class DatabaseStore:
         """Create any missing Project AUTO database tables."""
         Base.metadata.create_all(self.engine)
 
-    def update_item_prototype(self, item_id: int) -> list[float] | None:
-        """Save and return the unit-length mean of an item's reference vectors.
+    @staticmethod
+    def _normalized_reference(embedding: list[float] | NDArray) -> list[float]:
+        """Validate a numeric vector and return an independent unit-length list."""
+        vector = np.asarray(embedding)
+        if vector.ndim != 1 or vector.size == 0 or vector.dtype.kind not in "fiu":
+            raise ValueError("embedding must be a nonempty numeric vector")
+        if not np.isfinite(vector).all():
+            raise ValueError("embedding must contain finite numbers")
+        # Scale first to avoid overflow/underflow when calculating the norm.
+        values = vector.astype(np.float64)
+        scale = float(np.max(np.abs(values)))
+        if not isfinite(scale) or scale == 0.0:
+            raise ValueError("embedding must have finite, nonzero length")
+        values = values / scale
+        return (values / hypot(*values)).tolist()
 
-        References are expected to be normalized by the embedding extractor and
-        use identical model/preprocessing settings. No references clears the
-        prototype. Invalid references raise ValueError without changing it.
-        Call explicitly after reference changes; this is not an automatic hook.
-        """
+    @classmethod
+    def _reference_prototype(cls, references: list[ItemEmbedding]) -> list[float] | None:
+        """Calculate without committing so reference and prototype writes stay atomic."""
+        if not references:
+            return None
+        if len({reference.model_name for reference in references}) != 1:
+            raise ValueError("Cannot average embeddings from different models")
+        vectors = [cls._normalized_reference(reference.embedding) for reference in references]
+        if len({len(vector) for vector in vectors}) != 1:
+            raise ValueError("Embeddings must have matching dimensions")
+        count = len(vectors)
+        mean = [fsum(value / count for value in column) for column in zip(*vectors)]
+        if hypot(*mean) <= np.finfo(np.float64).eps * len(mean):
+            raise ValueError("Mean embedding cancels to zero within floating-point precision")
+        return cls._normalized_reference(mean)
+
+    def update_item_prototype(self, item_id: int) -> list[float] | None:
+        """Rebuild a prototype from unit-normalized references; clear it when empty."""
         with self.session_factory() as session:
             item = session.get(Item, item_id)
             if item is None:
                 raise ValueError(f"Item {item_id} does not exist")
-
-            references = item.embeddings
-            prototype: list[float] | None = None
-            if references:
-                if len({reference.model_name for reference in references}) != 1:
-                    raise ValueError("Cannot average embeddings from different models")
-
-                vectors = [reference.embedding for reference in references]
-                dimension: int | None = None
-                for vector in vectors:
-                    if not isinstance(vector, list) or not vector:
-                        raise ValueError("Embeddings must be nonempty vectors")
-                    if dimension is None:
-                        dimension = len(vector)
-                    if len(vector) != dimension:
-                        raise ValueError("Embeddings must have matching dimensions")
-                    if any(
-                        isinstance(value, bool)
-                        or not isinstance(value, (int, float))
-                        or not isfinite(value)
-                        for value in vector
-                    ):
-                        raise ValueError("Embeddings must contain finite numbers")
-                    if hypot(*vector) == 0.0:
-                        raise ValueError("Embeddings must have nonzero length")
-
-                count = len(vectors)
-                mean = [fsum(value / count for value in column) for column in zip(*vectors)]
-                norm = hypot(*mean)
-                if not isfinite(norm) or norm == 0.0:
-                    raise ValueError("The mean embedding must have finite, nonzero length")
-                prototype = [value / norm for value in mean]
-
+            prototype = self._reference_prototype(item.embeddings)
             item.item_prototype = prototype
             session.commit()
-
         return prototype
+
+    def save_item_embedding(
+        self,
+        item_id: int,
+        embedding: list[float] | NDArray,
+        model_name: str,
+        object_image_path: Path | None = None,
+    ) -> ItemEmbedding:
+        """Save one normalized reference and its item's prototype atomically.
+
+        The caller owns capture quality, scheduling, and image-file creation. Model
+        name must identify the same embedding space; identical preprocessing is
+        also required but is not yet recorded in the schema. One model per item
+        is supported because Item currently has only one prototype column.
+        """
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("model_name must not be empty")
+        vector = self._normalized_reference(embedding)
+        with self.session_factory() as session:
+            item = session.get(Item, item_id)
+            if item is None:
+                raise ValueError(f"Item {item_id} does not exist")
+            # Reject dimensions inconsistent with this model anywhere in the gallery.
+            existing = session.scalars(
+                select(ItemEmbedding).where(ItemEmbedding.model_name == model_name)
+            )
+            for reference in existing:
+                if len(self._normalized_reference(reference.embedding)) != len(vector):
+                    raise ValueError("Embeddings for the same model must have matching dimensions")
+            reference = ItemEmbedding(
+                model_name=model_name,
+                embedding=vector,
+                object_image_path=str(object_image_path) if object_image_path is not None else None,
+            )
+            item.embeddings.append(reference)
+            item.item_prototype = self._reference_prototype(item.embeddings)
+            session.commit()
+        return reference
+
+    def count_item_embeddings(self, item_id: int, model_name: str) -> int:
+        """Return the number of compatible references saved for a permanent item."""
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("model_name must not be empty")
+        statement = select(func.count(ItemEmbedding.id)).where(
+            ItemEmbedding.item_id == item_id,
+            ItemEmbedding.model_name == model_name,
+        )
+        with self.session_factory() as session:
+            return int(session.scalar(statement) or 0)
+
+    def add_reference_if_needed(
+        self,
+        item_id: int,
+        embedding: list[float] | NDArray,
+        model_name: str,
+        target_count: int,
+        object_image_path: Path | None = None,
+    ) -> tuple[bool, int]:
+        """Save one reference only while below target_count; update the prototype atomically.
+
+        Serializes the count check and the save inside one transaction so concurrent
+        callers cannot both push a permanent item's reference count past its target.
+        Returns whether a reference was saved and the item's resulting reference count.
+        """
+        if target_count <= 0:
+            raise ValueError("target_count must be positive")
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("model_name must not be empty")
+        vector = self._normalized_reference(embedding)
+        with self.session_factory() as session:
+            item = session.get(Item, item_id)
+            if item is None:
+                raise ValueError(f"Item {item_id} does not exist")
+            existing = [
+                reference for reference in item.embeddings if reference.model_name == model_name
+            ]
+            if len(existing) >= target_count:
+                return False, len(existing)
+            for reference in existing:
+                if len(self._normalized_reference(reference.embedding)) != len(vector):
+                    raise ValueError(
+                        "Embeddings for the same model must have matching dimensions"
+                    )
+            reference = ItemEmbedding(
+                model_name=model_name,
+                embedding=vector,
+                object_image_path=str(object_image_path)
+                if object_image_path is not None
+                else None,
+            )
+            item.embeddings.append(reference)
+            item.item_prototype = self._reference_prototype(item.embeddings)
+            session.commit()
+            return True, len(existing) + 1
+
+    def load_reid_gallery(
+        self, model_name: str, statuses: tuple[ItemStatus, ...] | None = None
+    ) -> list[GalleryEntry]:
+        """Load an independent in-memory snapshot of normalized reference arrays.
+
+        None includes all item statuses; an empty tuple includes none. Entries
+        are ordered by permanent item ID, references by reference ID. Items with
+        no references for this model are omitted. Each entry also carries its
+        item's stored prototype (already unit-normalized), or None if unset, for
+        prototype-shortlisted matching. No similarity search occurs here. Reuse
+        the returned list and explicitly reload after relevant writes.
+        Importing GalleryEntry needs the optional reid libraries, but loads no weights.
+        """
+        from project_auto.memory.reid import GalleryEntry
+
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("model_name must not be empty")
+        if statuses is not None and any(not isinstance(status, ItemStatus) for status in statuses):
+            raise ValueError("statuses must contain ItemStatus values")
+        statement = (
+            select(ItemEmbedding, Item.item_prototype)
+            .join(Item, Item.id == ItemEmbedding.item_id)
+            .where(ItemEmbedding.model_name == model_name)
+            .order_by(ItemEmbedding.item_id, ItemEmbedding.id)
+        )
+        if statuses is not None:
+            statement = statement.where(Item.status.in_(statuses))
+        grouped: dict[int, list[list[float]]] = {}
+        prototypes: dict[int, list[float] | None] = {}
+        dimension: int | None = None
+        with self.session_factory() as session:
+            for reference, prototype in session.execute(statement):
+                vector = self._normalized_reference(reference.embedding)
+                if dimension is not None and len(vector) != dimension:
+                    raise ValueError("Gallery embeddings must have matching dimensions")
+                dimension = len(vector)
+                grouped.setdefault(reference.item_id, []).append(vector)
+                prototypes[reference.item_id] = prototype
+        return [
+            GalleryEntry(
+                item_id,
+                np.array(vectors, dtype=np.float32),
+                np.array(prototypes[item_id], dtype=np.float32)
+                if prototypes[item_id] is not None
+                else None,
+            )
+            for item_id, vectors in grouped.items()
+        ]
 
     @staticmethod
     def _validate_event_interval(

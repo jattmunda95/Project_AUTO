@@ -24,28 +24,64 @@ Implementation of scene processing and live integration is deferred for now.
 
 - Migrate existing SQLite data for item_embeddings and items.item_prototype before live use;
   create_all() does not add columns to existing tables. Preserve existing data.
-- Add validated reference saving and gallery loading in store.py. Load once, pass the gallery
-  by reference to matching, and refresh it when embeddings or eligibility change.
 - Track model/preprocessing compatibility, including prototype provenance; never mix models
   or masked and unmasked references. Gallery eligibility is metadata filtering, not vector search.
-- Implement scene_processor.py independently and test identity decisions before live wiring.
-- Keep the first usable embedding for a new item, then capture five more suitable, spaced
-  references against that permanent ID. Update the prototype after each save; fewer than six
-  remain useful. Stop on disappearance and resume only after identity is resolved again.
-- Put capture count (initial target six), interval, quality rules, SAM model/device, and
-  background colour in YAML. Do not save per-frame references or database observations.
-- Verify real SAM polarity/quality and DINOv2 matching. Preserve the requested inverted mask
-  convention until explicitly changed. Current checks are synthetic, not accuracy validation.
-- Add permanent tests for prototype calculation and segmentation; evaluate prototype matching
-  versus existing reference top-k matching before adding prototype-based shortlisting.
-- Replace direct confirmation-to-ADD dispatch only after the standalone pieces are verified;
-  connect RETURNED through the coordinator/event layer, never through tracker inference.
-- Implement remaining occlusion/status-change behavior.
-- Save high-quality object crops and context evidence.
+- Verify real SAM polarity/quality and DINOv2 matching against the local models before trusting
+  live decisions. Preserve the requested inverted mask convention until explicitly changed.
+  Current checks are synthetic/mocked, not accuracy validation, and no live demo has run yet.
+- Add permanent tests for prototype calculation and segmentation.
+- Implement remaining occlusion/status-change behavior; OCCLUDED restoration is still undefined.
+- Save high-quality object crops and context evidence (object_image_path is still unset by
+  the coordinator's reference captures).
 - Add object-location queries.
+- Handle movement/removal signals for tracks whose identity is still PENDING beyond the
+  retirement guard already in place (see Completed); no timeout/backoff on repeated PENDING.
 
 ## Completed
 
+- Two-stage ReID matching in memory/reid.py: match_candidate first shortlists the
+  prototype_shortlist_size (default 3, YAML-configured) permanent items whose stored
+  prototype is closest to the query embedding, then runs the existing per-reference
+  top-k mean comparison only against that shortlist's references; an item with no
+  stored prototype is always kept in the shortlist rather than silently dropped, since
+  it cannot be ranked. A gallery at or below the shortlist size skips ranking entirely.
+  GalleryEntry now carries each item's prototype, and store.load_reid_gallery loads it
+  alongside the grouped reference arrays. Focused tests cover small-gallery bypass,
+  prototype-based exclusion of an otherwise-winning reference, and missing-prototype
+  fallback; real-image accuracy of the shortlist stage is unverified.
+- Live identity wiring in app.py through a new IdentityCoordinator
+  (src/project_auto/events/coordinator.py):
+  - the tracker's ADD confirmation now routes through scene_processor before any permanent
+    item is created; a NEW decision dispatches EventEngine.process_add, a match against a
+    REMOVED item dispatches EventEngine.process_return, and a match against a PRESENT/OCCLUDED
+    item calls the new EventEngine.associate_existing_item (binds the track, no event);
+  - a PENDING (unusable crop/mask) decision is retried on later visible frames for the same
+    track ID; a track that retires while still PENDING is dropped without ever reaching the
+    event layer, since no permanent item was created for it;
+  - EventEngine.is_item_claimed / associate_existing_item / item_id_for_track prevent two
+    visible tracks from claiming the same permanent item; process_return now binds its track
+    after successful persistence and rejects a reused track or a doubly claimed item, replacing
+    the earlier disconnected behavior that left no binding;
+  - store.count_item_embeddings and store.add_reference_if_needed are implemented: the latter
+    checks the current count and saves in one transaction against a caller-supplied target,
+    keeping the prototype update atomic with the accepted write, and reporting whether it saved;
+  - the coordinator captures the identity-resolution embedding as an item's first reference,
+    then schedules further spaced captures (YAML-configured interval) for resolved, visible
+    items below configs/scene_processor.yaml's reference_target_count (six by default); capture
+    naturally stops while a track is not visible in the current frame and resumes without
+    re-resolving identity once it reappears under the same track ID;
+  - new configs/segmenter.yaml (SAM2 model/device) and additions to configs/scene_processor.yaml
+    (reference_target_count, capture_interval_seconds) back the live construction in app.py;
+  - focused tests cover NEW/EXISTING/PENDING dispatch, retirement while pending, double-claim
+    guarding, and capture stopping at the target count; no live-camera/model demo has run yet,
+    and the SAM/DINOv2 accuracy caveats above still apply.
+- Validated reference saving and gallery loading in store.py:
+  - save_item_embedding validates/normalizes the vector, rejects dimension mismatches against
+    existing references for the same model_name, appends the ItemEmbedding row, and updates
+    the item's prototype atomically in one transaction.
+  - load_reid_gallery returns an independent in-memory snapshot (float32 arrays grouped by
+    item_id), filterable by model_name and item status; not a live view, reload explicitly
+    after writes.
 - Standalone DINOv2 ReID matcher and configs/reid.yaml; synthetic matching tests implemented.
   The optional reid dependency group declares torch, transformers, and Pillow.
 - ItemEmbedding model stores permanent-item references, model name, crop path, and timestamp;
@@ -147,15 +183,13 @@ Implementation of scene processing and live integration is deferred for now.
 
 ## Not implemented yet
 
-- Reliable identity association/ReID is not implemented; temporary BoT-SORT IDs remain
-  session/debug metadata and must not become permanent identity.
+- Real-world identity accuracy is still unverified; SAM2/DINOv2 wiring in app.py has not been
+  exercised against a live camera or real weights, only against mocked collaborators in tests.
 - Permanent event-engine `MOVED` tests and permanent store interval/bbox validation tests have
   not been added yet; the behavior itself is implemented, and direct integration, persistence,
   and live-demo checks pass.
 - The new embedding/prototype schema has not been migrated into the local database in this
   work; the earlier database recreation covered lifecycle fields only.
-- `RETURNED` activation is not implemented and must remain inactive until ReID reliably
-  resolves a detection to a permanent `item_id`.
 - Occlusion and general status-change tracker behavior are not implemented.
 - `memory/regions.py` is empty.
 - The debug display does not yet show tracker lifecycle states or emitted events.

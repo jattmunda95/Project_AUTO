@@ -1,4 +1,16 @@
-"""Standalone box-prompted SAM2 masks; no tracking, cropping, or persistence."""
+"""Standalone box-prompted SAM2 segmentation.
+
+Subfunctions:
+- Load configured SAM2 processor/model once and select the PyTorch device.
+- Validate a BGR frame, clip prompt boxes, and convert the image to RGB.
+- Segment supplied boxes and resize masks back to input-image coordinates.
+- Select the highest-scoring usable raw mask and invert it per the Colab convention.
+- Return one Segmentation per box, or None when no usable raw mask exists.
+
+True in the returned mask means retain the pixel; False means replace the background.
+The score describes the raw SAM mask. Real-image polarity/quality is not verified.
+scene_processor will crop and apply masks; this file does not write data or track items.
+"""
 
 from __future__ import annotations
 
@@ -90,6 +102,7 @@ class SamSegmenter:
         image = Image.fromarray(frame[:, :, ::-1].copy())
         inputs = self._processor(
             images=image, input_boxes=[[list(box) for box in clipped_boxes]], return_tensors="pt"
+            
         ).to(self._device)
         outputs = self._model(**inputs, multimask_output=True)
         masks = self._processor.post_process_masks(

@@ -248,3 +248,68 @@ def test_event_query_can_filter_by_permanent_item_id(engine: Engine) -> None:
 
     assert len(first_history) == 1
     assert first_history[0].item_id == first_item.id
+
+
+def test_count_item_embeddings_counts_only_matching_model(store: DatabaseStore) -> None:
+    item = store.create_item("cup")
+    other_item = store.create_item("mug")
+    store.save_item_embedding(item.id, [1.0, 0.0], "model-a")
+    store.save_item_embedding(item.id, [0.0, 1.0], "model-a")
+    store.save_item_embedding(other_item.id, [1.0, 0.0, 0.0], "model-b")
+
+    assert store.count_item_embeddings(item.id, "model-a") == 2
+    assert store.count_item_embeddings(item.id, "model-b") == 0
+    assert store.count_item_embeddings(other_item.id, "model-b") == 1
+
+
+def test_add_reference_if_needed_saves_below_target(store: DatabaseStore) -> None:
+    item = store.create_item("cup")
+
+    saved, count = store.add_reference_if_needed(item.id, [1.0, 0.0], "model-a", target_count=2)
+
+    assert saved is True
+    assert count == 1
+    assert store.count_item_embeddings(item.id, "model-a") == 1
+    saved_item = store.get_item(item.id)
+    assert saved_item is not None
+    assert saved_item.item_prototype == pytest.approx([1.0, 0.0])
+
+
+def test_add_reference_if_needed_stops_at_target(store: DatabaseStore) -> None:
+    item = store.create_item("cup")
+    store.add_reference_if_needed(item.id, [1.0, 0.0], "model-a", target_count=1)
+
+    saved, count = store.add_reference_if_needed(item.id, [0.0, 1.0], "model-a", target_count=1)
+
+    assert saved is False
+    assert count == 1
+    assert store.count_item_embeddings(item.id, "model-a") == 1
+
+
+def test_add_reference_if_needed_rejects_unknown_item(store: DatabaseStore) -> None:
+    with pytest.raises(ValueError, match="does not exist"):
+        store.add_reference_if_needed(999, [1.0, 0.0], "model-a", target_count=6)
+
+
+def test_add_reference_if_needed_rejects_mismatched_dimensions(store: DatabaseStore) -> None:
+    item = store.create_item("cup")
+    store.add_reference_if_needed(item.id, [1.0, 0.0], "model-a", target_count=6)
+
+    with pytest.raises(ValueError, match="matching dimensions"):
+        store.add_reference_if_needed(item.id, [1.0, 0.0, 0.0], "model-a", target_count=6)
+
+
+def test_load_reid_gallery_includes_each_items_prototype(store: DatabaseStore) -> None:
+    item = store.create_item("cup")
+    store.save_item_embedding(item.id, [1.0, 0.0], "model-a")
+    store.save_item_embedding(item.id, [0.0, 1.0], "model-a")
+    unreferenced_item = store.create_item("mug")
+
+    gallery = store.load_reid_gallery("model-a")
+
+    assert len(gallery) == 1
+    entry = gallery[0]
+    assert entry.item_id == item.id
+    assert entry.prototype is not None
+    assert entry.prototype == pytest.approx(store.get_item(item.id).item_prototype)
+    assert unreferenced_item.id not in {e.item_id for e in gallery}

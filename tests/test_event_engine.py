@@ -113,7 +113,7 @@ def test_explicit_return_persists_against_resolved_permanent_item(
     assert returned_event.event_type is ItemEventType.RETURNED
     assert returned_event.source_track_id == 19
     assert returned_event.detector_confidence == pytest.approx(0.87)
-    assert engine._item_ids_by_track_id == {}
+    assert engine._item_ids_by_track_id == {19: item.id}
 
 
 def test_explicit_return_requires_permanent_item_id(store: DatabaseStore) -> None:
@@ -121,6 +121,54 @@ def test_explicit_return_requires_permanent_item_id(store: DatabaseStore) -> Non
 
     with pytest.raises(ValueError, match="requires a permanent item_id"):
         engine.process_return(make_return_signal(None))
+
+
+def test_explicit_return_rejects_already_associated_track(store: DatabaseStore) -> None:
+    item = store.create_item("cup", status=ItemStatus.REMOVED)
+    other_item = store.create_item("mug", status=ItemStatus.REMOVED)
+    engine = EventEngine(store)
+    engine.process_return(make_return_signal(item.id))
+
+    with pytest.raises(ValueError, match="Track 19 is already associated"):
+        engine.process_return(make_return_signal(other_item.id))
+
+
+def test_explicit_return_rejects_item_claimed_by_another_track(store: DatabaseStore) -> None:
+    item = store.create_item("cup", status=ItemStatus.REMOVED)
+    engine = EventEngine(store)
+    engine.associate_existing_item(track_id=3, item_id=item.id)
+
+    with pytest.raises(ValueError, match="already claimed by a visible track"):
+        engine.process_return(make_return_signal(item.id))
+
+
+def test_associate_existing_item_binds_track_without_event(store: DatabaseStore) -> None:
+    item = store.create_item("cup")
+    engine = EventEngine(store)
+
+    engine.associate_existing_item(track_id=5, item_id=item.id)
+
+    assert engine.item_id_for_track(5) == item.id
+    assert store.get_item_history(item.id) == []
+
+
+def test_associate_existing_item_rejects_reused_track(store: DatabaseStore) -> None:
+    item = store.create_item("cup")
+    other_item = store.create_item("mug")
+    engine = EventEngine(store)
+    engine.associate_existing_item(track_id=5, item_id=item.id)
+
+    with pytest.raises(ValueError, match="Track 5 is already associated"):
+        engine.associate_existing_item(track_id=5, item_id=other_item.id)
+
+
+def test_associate_existing_item_rejects_double_claim(store: DatabaseStore) -> None:
+    item = store.create_item("cup")
+    engine = EventEngine(store)
+    engine.associate_existing_item(track_id=5, item_id=item.id)
+
+    with pytest.raises(ValueError, match="already claimed by a visible track"):
+        engine.associate_existing_item(track_id=6, item_id=item.id)
 
 
 def test_explicit_return_rejects_mismatched_track_ids(store: DatabaseStore) -> None:

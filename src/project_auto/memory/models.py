@@ -1,4 +1,14 @@
-"""Persistent database models for permanent items and meaningful events."""
+"""Persistent database schema for permanent items, events, and references.
+
+Subfunctions:
+- Item defines permanent identity, status, timestamps, and nullable prototype storage.
+- ItemEmbedding links individual JSON vectors and model/crop metadata to permanent IDs.
+- ItemEvent records meaningful lifecycle changes and evidence paths.
+- Define enum constraints, indexes, relationships, and cascading child deletion.
+
+Models describe storage; store.py validates vectors and updates prototypes. They do not
+schedule captures, calculate image embeddings, or enforce the planned reference count.
+"""
 
 from __future__ import annotations
 

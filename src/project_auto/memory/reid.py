@@ -1,9 +1,18 @@
-"""Standalone associative-memory/ReID matching for permanently identified items.
+"""Standalone embedding extraction and permanent-item similarity matching.
 
-This module never mutates tracker or database state. It searches embeddings of
-eligible permanent items for one detection crop and returns a candidate match
-decision. It stays disconnected from RETURNED emission, tracker dispatch, and
-the live app until its behavior is implemented and verified (see TASKS.md).
+Subfunctions:
+- ReidConfig loads model/device, acceptance threshold, reference top-k, and the
+  prototype-shortlist size.
+- GalleryEntry holds one permanent item's references and its stored prototype;
+  ReidMatch reports the decision.
+- ReidMatcher loads DINOv2 and creates a normalized embedding from a prepared RGB crop.
+- match_candidate first shortlists the closest permanent items by prototype similarity,
+  then compares only their references, averages each shortlisted item's top-k scores,
+  and applies the acceptance threshold to the best of those.
+
+The caller supplies eligible gallery entries; store.py loads them, prototype included.
+No database writes, tracker updates, ADD/RETURNED decisions, or capture scheduling
+occur here. Real-image identity reliability remains unverified.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ class ReidConfig:
     device: str
     acceptance_threshold: float
     top_k: int
+    prototype_shortlist_size: int = 3
 
     @classmethod
     def from_yaml(cls, config_path: Path) -> ReidConfig:
@@ -39,6 +49,7 @@ class ReidConfig:
             device=str(config["device"]),
             acceptance_threshold=float(config["acceptance_threshold"]),
             top_k=int(config["top_k"]),
+            prototype_shortlist_size=int(config.get("prototype_shortlist_size", 3)),
         )
 
 
@@ -48,6 +59,7 @@ class GalleryEntry:
 
     item_id: int
     embeddings: NDArray  # shape [num_references, embedding_size]
+    prototype: NDArray | None = None  # unit-normalized mean of embeddings, if known
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +95,31 @@ class ReidMatcher:
 
         return embedding.squeeze(0).cpu().numpy()
 
+    def _shortlist_by_prototype(
+        self,
+        query_embedding: NDArray,
+        gallery: list[GalleryEntry],
+    ) -> list[GalleryEntry]:
+        """Return the closest entries by prototype similarity, capped at the config size.
+
+        An entry without a stored prototype cannot be ranked this way and is always
+        kept, since excluding it would silently drop an otherwise-eligible item.
+        """
+        size = self.config.prototype_shortlist_size
+        if size <= 0 or len(gallery) <= size:
+            return gallery
+
+        ranked: list[tuple[float, GalleryEntry]] = []
+        unranked: list[GalleryEntry] = []
+        for entry in gallery:
+            if entry.prototype is None:
+                unranked.append(entry)
+            else:
+                ranked.append((float(entry.prototype @ query_embedding), entry))
+        ranked.sort(key=lambda scored: scored[0], reverse=True)
+
+        return [entry for _, entry in ranked[:size]] + unranked
+
     def match_candidate(
         self,
         crop: Image.Image,
@@ -90,17 +127,20 @@ class ReidMatcher:
     ) -> ReidMatch:
         """Compare a detection crop against eligible items and decide a match.
 
+        First shortlists the items whose prototype is closest to the query, then
+        scores only those items by their per-reference top-k mean similarity.
         Does not mutate tracker or database state; callers own persistence.
         """
         if not gallery:
             return ReidMatch(item_id=None, similarity=0.0, accepted=False)
 
         query_embedding = self.create_embedding(crop)
+        shortlist = self._shortlist_by_prototype(query_embedding, gallery)
 
         best_item_id: int | None = None
         best_score = float("-inf")
 
-        for entry in gallery:
+        for entry in shortlist:
             similarities = entry.embeddings @ query_embedding
             k = min(self.config.top_k, len(similarities))
             top_k_mean = float(np.sort(similarities)[-k:].mean())
