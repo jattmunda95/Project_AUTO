@@ -1,2 +1,2 @@
-model_name: facebook/sam2-hiera-small
+model_name: facebook/sam2-hiera-base-plus
 device: cpu

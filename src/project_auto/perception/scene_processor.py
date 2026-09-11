@@ -2,7 +2,7 @@
 
 Subfunctions:
 - SceneProcessorConfig loads the background fill colour and minimum usable mask size.
-- prepare_reference crops a detection, segments it, applies SAM's inverted keep-mask,
+- prepare_reference crops a detection, segments it, applies SAM's keep-mask,
   replaces background pixels, and embeds the result with ReID's preprocessing.
 - process compares a prepared reference against the caller's eligible gallery and
   returns NEW, EXISTING, or PENDING plus evidence.
@@ -101,11 +101,21 @@ class SceneProcessor:
         """
         segmentation = self._segmenter.segment(frame, [box])[0]
         if segmentation is None:
+            print(f"[SceneProcessor] prepare_reference: box={box} -> segmenter returned no usable mask")
             return None
 
         x1, y1, x2, y2 = segmentation.box
-        if int(segmentation.mask[y1:y2, x1:x2].sum()) < self.config.min_mask_pixels:
+        mask_pixels = int(segmentation.mask[y1:y2, x1:x2].sum())
+        if mask_pixels < self.config.min_mask_pixels:
+            print(
+                f"[SceneProcessor] prepare_reference: box={box} -> mask_pixels={mask_pixels} "
+                f"below min_mask_pixels={self.config.min_mask_pixels}, sam_score={segmentation.score:.4f}"
+            )
             return None
+        print(
+            f"[SceneProcessor] prepare_reference: box={box} -> usable mask, mask_pixels={mask_pixels}, "
+            f"sam_score={segmentation.score:.4f}"
+        )
 
         crop = frame[y1:y2, x1:x2]
         mask = segmentation.mask[y1:y2, x1:x2]
@@ -132,6 +142,7 @@ class SceneProcessor:
         """
         reference = self.prepare_reference(frame, box)
         if reference is None:
+            print(f"[SceneProcessor] process: track_id={source_track_id} -> PENDING (no usable reference)")
             return IdentityDecision(
                 decision="pending",
                 source_track_id=source_track_id,
@@ -142,6 +153,10 @@ class SceneProcessor:
 
         match = self._matcher.match_candidate(reference.crop, gallery)
         decision: IdentityDecisionType = "existing" if match.accepted else "new"
+        print(
+            f"[SceneProcessor] process: track_id={source_track_id} -> decision={decision} "
+            f"item_id={match.item_id} similarity={match.similarity:.4f}"
+        )
         return IdentityDecision(
             decision=decision,
             source_track_id=source_track_id,

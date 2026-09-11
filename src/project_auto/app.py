@@ -92,9 +92,12 @@ def run_app() -> None:
             reid_model_name=reid_config.model_name,
             reference_target_count=int(scene_processor_settings["reference_target_count"]),
             capture_interval_seconds=float(scene_processor_settings["capture_interval_seconds"]),
-            pending_retry_interval_seconds=float(
-                scene_processor_settings["pending_retry_interval_seconds"]
-            ),
+            bad_mask_cooldown_seconds=float(scene_processor_settings["bad_mask_cooldown_seconds"]),
+            queue_full_retry_seconds=float(scene_processor_settings["queue_full_retry_seconds"]),
+            min_box_area=int(scene_processor_settings["min_box_area"]),
+            min_detector_confidence=float(scene_processor_settings["min_detector_confidence"]),
+            edge_margin_pixels=int(scene_processor_settings["edge_margin_pixels"]),
+            job_queue_max_size=int(scene_processor_settings["job_queue_max_size"]),
         )
 
         with camera:
@@ -118,4 +121,6 @@ def run_app() -> None:
                     break
     finally:
         cv2.destroyAllWindows()
+        if "coordinator" in locals():
+            coordinator.shutdown()
         store.engine.dispose()

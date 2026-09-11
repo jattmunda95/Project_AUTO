@@ -1,6 +1,6 @@
 # Tried in order: an external USB camera first, then the built-in webcam if it's absent.
-usb_device: 1
-webcam_device: 0
+usb_device: 0
+webcam_device: 1
 width: 1280
 height: 720
 fps: 30

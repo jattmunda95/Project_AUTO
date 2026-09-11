@@ -5,6 +5,21 @@ min_mask_pixels: 100
 reference_target_count: 6
 capture_interval_seconds: 2.0
 
-# How often to retry a still-unresolved (PENDING) identity decision, in seconds.
-# Runs SAM2 + DINOv2 inference each attempt; too low will stall the camera loop.
-pending_retry_interval_seconds: 1.0
+# Identification runs on a background worker now (see identification_worker.py),
+# so these no longer gate the camera loop directly; they size its bounded queue
+# and its retry cooldowns.
+job_queue_max_size: 8
+
+# Cooldown before retrying a track whose last attempt produced an unusable
+# reference (bad/empty SAM mask) or a claimed-item conflict. Prevents the
+# repeated-retry loop that a poor mask used to cause.
+bad_mask_cooldown_seconds: 5.0
+
+# Cooldown before retrying a track whose job was dropped because the bounded
+# queue was full. Short, since this is not a quality problem, just backpressure.
+queue_full_retry_seconds: 0.5
+
+# Cheap pre-SAM checks applied before ever submitting a job to the worker.
+min_box_area: 400
+min_detector_confidence: 0.0
+edge_margin_pixels: 2

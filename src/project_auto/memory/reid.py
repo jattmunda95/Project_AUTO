@@ -132,6 +132,7 @@ class ReidMatcher:
         Does not mutate tracker or database state; callers own persistence.
         """
         if not gallery:
+            print("[ReID] match_candidate: gallery is empty, nothing to match against -> NEW")
             return ReidMatch(item_id=None, similarity=0.0, accepted=False)
 
         query_embedding = self.create_embedding(crop)
@@ -139,17 +140,25 @@ class ReidMatcher:
 
         best_item_id: int | None = None
         best_score = float("-inf")
+        per_item_scores: list[tuple[int, float]] = []
 
         for entry in shortlist:
             similarities = entry.embeddings @ query_embedding
             k = min(self.config.top_k, len(similarities))
             top_k_mean = float(np.sort(similarities)[-k:].mean())
+            per_item_scores.append((entry.item_id, top_k_mean))
 
             if top_k_mean > best_score:
                 best_score = top_k_mean
                 best_item_id = entry.item_id
 
         accepted = best_score >= self.config.acceptance_threshold
+
+        print(
+            f"[ReID] match_candidate: gallery_size={len(gallery)} shortlisted={len(shortlist)} "
+            f"scores={per_item_scores} best_item_id={best_item_id} best_score={best_score:.4f} "
+            f"threshold={self.config.acceptance_threshold:.4f} accepted={accepted}"
+        )
 
         return ReidMatch(
             item_id=best_item_id if accepted else None,

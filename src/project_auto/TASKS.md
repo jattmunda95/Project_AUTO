@@ -2,23 +2,24 @@
 
 ## Current task
 
-Prepare the next identity architecture one explicitly approved feature at a time.
-Implementation of scene processing and live integration is deferred for now.
+Live scene processing and identity integration are now wired end to end (see Completed)
+but unverified against real hardware. The immediate priority is getting a working, watchable
+live run: fix camera device selection, confirm the frame rate is acceptable after the
+pending-retry throttle, and only then judge real SAM2/DINOv2 identity accuracy.
 
-- The app/coordinator reacts to tracker confirmation and calls a stage-blind scene processor.
-  The tracker must never call SAM, ReID, the scene processor, or the database.
-- Compare after confirmation, before the existing ADD path creates a permanent item.
-  Short-lived candidates create neither items nor references.
-- Scene processing prepares a detection crop, applies SAM's inverted keep-mask, embeds it,
-  and returns a proposed NEW, EXISTING, or PENDING identity decision with source_track_id,
-  optional permanent item_id, and similarity. These result types are not implemented yet.
-- The event layer combines confirmation, identity, and current database status: NEW -> ADD;
-  EXISTING + REMOVED -> RETURNED; EXISTING + PRESENT -> association only. Define OCCLUDED
-  restoration separately; an existing match alone must never imply RETURNED.
-- The coordinator retains pending decisions and retries on later visible frames because
-  confirmation is a one-time signal. Cancel on retirement and guard against reused track IDs.
-  Define handling of movement/removal signals while identity remains unresolved.
-- Prevent two visible tracks from claiming the same permanent item.
+- Known issue: the app currently falls back to the built-in/inbuilt camera even when an
+  external USB webcam is connected. `configs/camera.yaml` tries `usb_device: 1` before
+  `webcam_device: 0`, but on the target machine device index 1 evidently does not resolve
+  to the physical USB webcam (either it fails to open, or its confirmation read fails, or
+  it silently opens a different device). Needs investigation: enumerate `cv2.VideoCapture`
+  indices 0-4 and check which one is actually the external webcam, then correct the config
+  default; consider logging the OpenCV backend name for the opened device to help diagnose.
+- Confirm the new `pending_retry_interval_seconds` throttle (default 1.0s) actually restores
+  a usable frame rate live; if not, next options are GPU (`device: cuda`), a smaller SAM2
+  checkpoint (`facebook/sam2-hiera-tiny`), or decoupling camera capture into its own thread
+  so display never blocks on inference.
+- Once frame rate is acceptable, verify real SAM mask polarity/quality and DINOv2 match
+  accuracy against the local models; all matching accuracy has only been checked synthetically.
 
 ## Next
 
@@ -26,19 +27,34 @@ Implementation of scene processing and live integration is deferred for now.
   create_all() does not add columns to existing tables. Preserve existing data.
 - Track model/preprocessing compatibility, including prototype provenance; never mix models
   or masked and unmasked references. Gallery eligibility is metadata filtering, not vector search.
-- Verify real SAM polarity/quality and DINOv2 matching against the local models before trusting
-  live decisions. Preserve the requested inverted mask convention until explicitly changed.
-  Current checks are synthetic/mocked, not accuracy validation, and no live demo has run yet.
 - Add permanent tests for prototype calculation and segmentation.
 - Implement remaining occlusion/status-change behavior; OCCLUDED restoration is still undefined.
 - Save high-quality object crops and context evidence (object_image_path is still unset by
   the coordinator's reference captures).
 - Add object-location queries.
 - Handle movement/removal signals for tracks whose identity is still PENDING beyond the
-  retirement guard already in place (see Completed); no timeout/backoff on repeated PENDING.
+  retirement guard already in place (see Completed).
 
 ## Completed
 
+- Camera device fallback and a live performance fix:
+  - `capture/camera.py` now tries an external USB camera index before the built-in webcam
+    index (`configs/camera.yaml`: `usb_device`, `webcam_device`), confirming each candidate
+    with a real frame read (not just `isOpened()`) before accepting it, since a stale OS
+    handle for a disconnected camera can report open while producing nothing;
+  - fixed a crash (`cv::Mat` assertion, preceded by repeated OpenCV MSMF
+    "Failed to select stream 0" warnings) caused by setting resolution/FPS *after* the
+    confirmation read; changing capture properties mid-stream corrupted the frame buffer on
+    Windows MSMF. Properties are now set before the first read. Regression test added
+    asserting the set-before-read call order;
+  - known issue (see Current task): still defaults to the built-in camera in practice even
+    with a USB webcam connected, meaning the assumed `usb_device: 1` index is wrong for the
+    target machine, not that the fallback logic itself is broken;
+  - fixed unbounded per-frame retry cost: `IdentityCoordinator` was re-running full SAM2+
+    DINOv2 inference on every still-PENDING track on every single frame with no throttling,
+    which could stall the camera loop indefinitely on one hard-to-segment object. Added
+    `pending_retry_interval_seconds` (default 1.0s, YAML-configured), mirroring the existing
+    reference-capture spacing; live frame-rate improvement not yet confirmed on hardware.
 - Two-stage ReID matching in memory/reid.py: match_candidate first shortlists the
   prototype_shortlist_size (default 3, YAML-configured) permanent items whose stored
   prototype is closest to the query embedding, then runs the existing per-reference
@@ -185,6 +201,9 @@ Implementation of scene processing and live integration is deferred for now.
 
 - Real-world identity accuracy is still unverified; SAM2/DINOv2 wiring in app.py has not been
   exercised against a live camera or real weights, only against mocked collaborators in tests.
+- The camera currently opens the built-in/inbuilt device even when a USB webcam is connected;
+  the configured USB device index needs to be confirmed against the target machine's actual
+  enumeration (see Current task).
 - Permanent event-engine `MOVED` tests and permanent store interval/bbox validation tests have
   not been added yet; the behavior itself is implemented, and direct integration, persistence,
   and live-demo checks pass.

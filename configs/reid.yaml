@@ -1,5 +1,11 @@
 model_name: facebook/dinov2-base
 device: cpu
-acceptance_threshold: 0.75
+# DINOv2's raw CLS-token cosine similarity runs much lower than a "how similar
+# does this look" intuition suggests; 0.75 was unreachable in practice (observed
+# best-match scores around 0.07), so every detection fell through to NEW every
+# time. Retune this against your own printed [ReID] match_candidate scores:
+# watch several same-item re-detections vs different-item detections and pick a
+# threshold between the two clusters, with margin.
+acceptance_threshold: 0.4
 top_k: 3
 prototype_shortlist_size: 3

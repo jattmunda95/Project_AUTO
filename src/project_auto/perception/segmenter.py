@@ -4,11 +4,14 @@ Subfunctions:
 - Load configured SAM2 processor/model once and select the PyTorch device.
 - Validate a BGR frame, clip prompt boxes, and convert the image to RGB.
 - Segment supplied boxes and resize masks back to input-image coordinates.
-- Select the highest-scoring usable raw mask and invert it per the Colab convention.
+- Select the highest-scoring usable raw mask, kept as SAM2 returns it.
 - Return one Segmentation per box, or None when no usable raw mask exists.
 
-True in the returned mask means retain the pixel; False means replace the background.
-The score describes the raw SAM mask. Real-image polarity/quality is not verified.
+True in the returned mask means retain the pixel (it is part of the segmented
+object); False means replace it with the background fill colour. This matches
+Sam2Processor.post_process_masks' own polarity; an earlier version of this file
+inverted it, which discarded the object instead of the background and was
+confirmed against real footage to produce near-zero, unstable ReID similarity.
 scene_processor will crop and apply masks; this file does not write data or track items.
 """
 
@@ -42,7 +45,7 @@ class SegmenterConfig:
 
 @dataclass(frozen=True, slots=True)
 class Segmentation:
-    """Inverted keep-mask in frame coordinates; score belongs to the raw SAM mask."""
+    """Keep-mask in frame coordinates (True retains); score belongs to the raw SAM mask."""
 
     box: tuple[int, int, int, int]
     mask: NDArray[np.bool_]
@@ -74,8 +77,8 @@ class SamSegmenter:
 
         Input is an OpenCV BGR uint8 frame and integer xyxy boxes in its coordinates.
         Boxes are clipped to frame bounds; empty or reversed boxes raise ValueError.
-        The selected SAM mask is inverted to match the Colab convention: True
-        pixels are to be retained, False pixels replaced with background colour.
+        The selected SAM mask is returned as-is: True pixels are the segmented
+        object and are to be retained; False pixels are replaced with background colour.
         Frames are not modified and masks are not crops.
         """
         if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
@@ -124,7 +127,13 @@ class SamSegmenter:
                 results.append(None)
                 continue
             best = int(np.argmax(np.where(valid, candidate_scores, -np.inf)))
-            # Preserve Colab's convention: raw SAM True pixels are replaced.
-            keep_mask = ~candidates[best]
+            # Sam2Processor.post_process_masks already returns True for the
+            # segmented foreground object; keep it as-is so the object is
+            # retained and the background gets replaced (not the reverse).
+            # A prior "invert to match the Colab convention" step here was
+            # discarding the object itself, leaving only background context to
+            # embed -- verified against real footage as the cause of near-zero,
+            # unstable same-item similarity scores.
+            keep_mask = candidates[best]
             results.append(Segmentation(box, keep_mask, float(candidate_scores[best])))
         return results

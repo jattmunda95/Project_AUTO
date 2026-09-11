@@ -1,4 +1,8 @@
-"""Standalone identity-coordinator tests using a real store and a mocked scene processor."""
+"""Standalone identity-coordinator tests: async submission, dedup, and result apply.
+
+Uses a real store and a FakeWorker double (no real thread) so job submission and
+result application can be driven deterministically, one step at a time.
+"""
 
 from __future__ import annotations
 
@@ -11,11 +15,44 @@ from unittest.mock import Mock
 
 from project_auto.events.coordinator import IdentityCoordinator
 from project_auto.events.event_engine import EventEngine
+from project_auto.events.identification import IdentificationJob, IdentificationResult, IdentificationState
 from project_auto.memory.models import Base, ItemStatus
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.detector import Detection
-from project_auto.perception.scene_processor import IdentityDecision, PreparedReference
+from project_auto.perception.scene_processor import PreparedReference
 from project_auto.perception.tracker import TrackSignal, TrackSignalType
+
+
+class FakeWorker:
+    """A deterministic worker double: records submissions, returns queued results."""
+
+    def __init__(self, max_size: int = 8) -> None:
+        self.max_size = max_size
+        self.submitted: list[IdentificationJob] = []
+        self._queued: list[IdentificationJob] = []
+        self._pending_results: list[IdentificationResult] = []
+        self.started = False
+        self.stopped = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self, timeout: float | None = None) -> None:
+        self.stopped = True
+
+    def submit(self, job: IdentificationJob) -> bool:
+        self.submitted.append(job)
+        if len(self._queued) >= self.max_size:
+            return False
+        self._queued.append(job)
+        return True
+
+    def poll_results(self) -> list[IdentificationResult]:
+        results, self._pending_results = self._pending_results, []
+        return results
+
+    def push_result(self, result: IdentificationResult) -> None:
+        self._pending_results.append(result)
 
 
 @pytest.fixture
@@ -34,22 +71,16 @@ def store() -> DatabaseStore:
 
 
 @pytest.fixture
-def scene_processor() -> Mock:
-    return Mock()
+def worker() -> FakeWorker:
+    return FakeWorker()
 
 
 def reference() -> PreparedReference:
     return PreparedReference(crop=Image.new("RGB", (4, 4)), embedding=np.array([1.0, 0.0]))
 
 
-def make_detection(track_id: int) -> Detection:
-    return Detection(
-        track_id=track_id,
-        class_id=41,
-        class_name="cup",
-        confidence=0.9,
-        box=(10, 20, 110, 220),
-    )
+def make_detection(track_id: int, box: tuple[int, int, int, int] = (10, 20, 110, 220)) -> Detection:
+    return Detection(track_id=track_id, class_id=41, class_name="cup", confidence=0.9, box=box)
 
 
 def add_signal(track_id: int) -> TrackSignal:
@@ -60,100 +91,217 @@ def remove_signal(track_id: int, detection: Detection | None = None) -> TrackSig
     return TrackSignal(TrackSignalType.REMOVE, track_id, detection or make_detection(track_id))
 
 
+def moved_signal(track_id: int) -> TrackSignal:
+    import datetime as _dt
+
+    detection = make_detection(track_id)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    return TrackSignal(
+        TrackSignalType.MOVED,
+        track_id,
+        detection,
+        started_at=now,
+        finished_at=now,
+        source_box=detection.box,
+        destination_box=detection.box,
+    )
+
+
 @pytest.fixture
-def coordinator(store: DatabaseStore, scene_processor: Mock) -> IdentityCoordinator:
+def coordinator(store: DatabaseStore, worker: FakeWorker) -> IdentityCoordinator:
     event_engine = EventEngine(store)
     return IdentityCoordinator(
-        scene_processor=scene_processor,
+        scene_processor=Mock(),
         event_engine=event_engine,
         store=store,
         reid_model_name="test-model",
         reference_target_count=2,
         capture_interval_seconds=0.0,
-        pending_retry_interval_seconds=0.0,
+        bad_mask_cooldown_seconds=5.0,
+        queue_full_retry_seconds=0.5,
         clock=Mock(return_value=0.0),
+        worker=worker,
     )
 
 
-def test_new_decision_creates_item_and_saves_first_reference(
-    coordinator: IdentityCoordinator, scene_processor: Mock, store: DatabaseStore
-) -> None:
-    scene_processor.process.return_value = IdentityDecision("new", 7, None, 0.0, reference())
+def frame() -> np.ndarray:
+    return np.zeros((480, 640, 3), dtype=np.uint8)
 
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(7)], {})
+
+def test_worker_is_started_on_construction(coordinator: IdentityCoordinator, worker: FakeWorker) -> None:
+    assert worker.started is True
+
+
+def test_shutdown_stops_the_worker(coordinator: IdentityCoordinator, worker: FakeWorker) -> None:
+    coordinator.shutdown()
+    assert worker.stopped is True
+
+
+def test_a_new_track_submits_exactly_one_resolve_job(
+    coordinator: IdentityCoordinator, worker: FakeWorker
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    assert len(worker.submitted) == 1
+    assert worker.submitted[0].kind == "resolve"
+    assert worker.submitted[0].track_id == 7
+
+
+def test_repeated_frames_for_a_queued_track_do_not_resubmit(
+    coordinator: IdentityCoordinator, worker: FakeWorker
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+
+    # Only the initial ADD submits; a QUEUED track is not in pending_track_ids(),
+    # so the retry loop over detections_by_track_id never re-submits it either.
+    assert len(worker.submitted) == 1
+
+
+def test_submission_does_not_block_when_the_queue_is_full(
+    coordinator: IdentityCoordinator, worker: FakeWorker
+) -> None:
+    worker.max_size = 0  # every submit() reports the queue as full
+
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    assert len(worker.submitted) == 1  # attempted once, did not raise or block
+    assert coordinator._reference_manager.state(7) is IdentificationState.WAITING_FOR_BETTER_VIEW
+
+
+def test_queue_full_track_becomes_eligible_again_after_its_short_cooldown(
+    store: DatabaseStore, worker: FakeWorker
+) -> None:
+    fake_time = [0.0]
+    worker.max_size = 0
+    event_engine = EventEngine(store)
+    coordinator = IdentityCoordinator(
+        scene_processor=Mock(),
+        event_engine=event_engine,
+        store=store,
+        reid_model_name="test-model",
+        reference_target_count=2,
+        capture_interval_seconds=0.0,
+        bad_mask_cooldown_seconds=5.0,
+        queue_full_retry_seconds=0.5,
+        clock=lambda: fake_time[0],
+        worker=worker,
+    )
+
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    assert len(worker.submitted) == 1
+
+    fake_time[0] = 0.2
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    assert len(worker.submitted) == 1  # still cooling down
+
+    worker.max_size = 8
+    fake_time[0] = 0.6
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    assert len(worker.submitted) == 2  # cooldown elapsed, worker has room now
+
+
+def test_new_result_creates_item_and_queues_the_first_reference_capture(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
 
     assert store.count_items() == 1
     item = store.list_present_items()[0]
     assert coordinator.event_engine.item_id_for_track(7) == item.id
-    assert store.count_item_embeddings(item.id, "test-model") == 1
+    capture_jobs = [job for job in worker.submitted if job.kind == "capture"]
+    assert len(capture_jobs) == 1
+    assert capture_jobs[0].precomputed_reference is not None
 
 
-def test_pending_decision_is_retried_on_a_later_visible_frame(
-    coordinator: IdentityCoordinator, scene_processor: Mock, store: DatabaseStore
+def test_pending_result_defers_the_track_instead_of_retrying_immediately(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
 ) -> None:
-    scene_processor.process.return_value = IdentityDecision("pending", 7, None, 0.0, None)
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
 
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(7)], {})
+    worker.push_result(IdentificationResult(kind="resolve", track_id=7, status="pending"))
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+
     assert store.count_items() == 0
-
-    scene_processor.process.return_value = IdentityDecision("new", 7, None, 0.0, reference())
-    scene_processor.prepare_reference.return_value = reference()
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [], {7: make_detection(7)})
-
-    assert store.count_items() == 1
+    assert coordinator._reference_manager.state(7) is IdentificationState.DEFERRED
+    # Still visible next frame, but cooling down: must not resubmit.
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    assert len(worker.submitted) == 1
 
 
-def test_pending_retries_are_throttled_by_interval(
-    store: DatabaseStore, scene_processor: Mock
-) -> None:
+def test_deferred_track_is_resubmitted_only_after_its_cooldown(store: DatabaseStore, worker: FakeWorker) -> None:
     fake_time = [0.0]
     event_engine = EventEngine(store)
     coordinator = IdentityCoordinator(
-        scene_processor=scene_processor,
+        scene_processor=Mock(),
         event_engine=event_engine,
         store=store,
         reid_model_name="test-model",
         reference_target_count=2,
         capture_interval_seconds=0.0,
-        pending_retry_interval_seconds=5.0,
+        bad_mask_cooldown_seconds=5.0,
+        queue_full_retry_seconds=0.5,
         clock=lambda: fake_time[0],
+        worker=worker,
     )
-    scene_processor.process.return_value = IdentityDecision("pending", 7, None, 0.0, None)
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(7)], {})
-    assert scene_processor.process.call_count == 1
 
-    # Still visible one second later: within the 5s interval, must not retry yet.
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(IdentificationResult(kind="resolve", track_id=7, status="pending"))
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    assert len(worker.submitted) == 1
+
     fake_time[0] = 1.0
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [], {7: make_detection(7)})
-    assert scene_processor.process.call_count == 1
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    assert len(worker.submitted) == 1  # within the 5s cooldown
 
-    # Past the interval: retries.
     fake_time[0] = 6.0
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [], {7: make_detection(7)})
-    assert scene_processor.process.call_count == 2
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    assert len(worker.submitted) == 2  # cooldown elapsed
 
 
-def test_pending_request_is_cancelled_on_retirement(
-    coordinator: IdentityCoordinator, scene_processor: Mock, store: DatabaseStore
+def test_a_bad_mask_never_causes_an_immediate_retry_loop(
+    coordinator: IdentityCoordinator, worker: FakeWorker
 ) -> None:
-    scene_processor.process.return_value = IdentityDecision("pending", 7, None, 0.0, None)
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(7)], {})
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(IdentificationResult(kind="resolve", track_id=7, status="pending"))
 
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [remove_signal(7)], {})
-    # No longer pending: a later sighting under the same track ID starts fresh, not a retry.
-    scene_processor.process.reset_mock()
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [], {7: make_detection(7)})
+    for _ in range(40):
+        coordinator.handle_frame(frame(), [], {7: make_detection(7)})
 
-    scene_processor.process.assert_not_called()
+    # Same-frame cooldown never elapses (clock is fixed at 0.0): exactly one attempt total.
+    assert len(worker.submitted) == 1
+
+
+def test_removed_track_is_forgotten_so_a_reused_id_starts_fresh(
+    coordinator: IdentityCoordinator, worker: FakeWorker
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(IdentificationResult(kind="resolve", track_id=7, status="pending"))
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+
+    coordinator.handle_frame(frame(), [remove_signal(7)], {})
+    worker.submitted.clear()
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    assert len(worker.submitted) == 1  # a fresh submission, not blocked by old deferred state
 
 
 def test_existing_match_against_removed_item_returns_it(
-    coordinator: IdentityCoordinator, scene_processor: Mock, store: DatabaseStore
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
 ) -> None:
     item = store.create_item("cup", status=ItemStatus.REMOVED)
-    scene_processor.process.return_value = IdentityDecision("existing", 7, item.id, 0.9, reference())
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
 
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
 
     saved_item = store.get_item(item.id)
     assert saved_item is not None
@@ -162,44 +310,106 @@ def test_existing_match_against_removed_item_returns_it(
 
 
 def test_existing_match_against_present_item_only_associates(
-    coordinator: IdentityCoordinator, scene_processor: Mock, store: DatabaseStore
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
 ) -> None:
     item = store.create_item("cup", status=ItemStatus.PRESENT)
-    scene_processor.process.return_value = IdentityDecision("existing", 7, item.id, 0.9, reference())
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
 
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
 
     assert store.get_item_history(item.id) == []
     assert coordinator.event_engine.item_id_for_track(7) == item.id
 
 
-def test_double_claim_on_same_item_keeps_second_track_pending(
-    coordinator: IdentityCoordinator, scene_processor: Mock, store: DatabaseStore
+def test_double_claim_on_same_item_defers_the_second_track(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
 ) -> None:
     item = store.create_item("cup", status=ItemStatus.PRESENT)
-    scene_processor.process.return_value = IdentityDecision("existing", 7, item.id, 0.9, reference())
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(7)], {})
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
 
-    scene_processor.process.return_value = IdentityDecision("existing", 8, item.id, 0.9, reference())
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(8)], {})
+    coordinator.handle_frame(frame(), [add_signal(8)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=8, status="existing", item_id=item.id, reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
 
     assert coordinator.event_engine.item_id_for_track(8) is None
-    assert 8 in coordinator._pending_track_ids
+    assert coordinator._reference_manager.state(8) is IdentificationState.DEFERRED
 
 
-def test_reference_capture_stops_at_target_count(
-    coordinator: IdentityCoordinator, scene_processor: Mock, store: DatabaseStore
+def test_a_result_for_a_track_that_disappeared_is_handled_safely(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
 ) -> None:
-    scene_processor.process.return_value = IdentityDecision("new", 7, None, 0.0, reference())
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [add_signal(7)], {})
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    coordinator.handle_frame(frame(), [remove_signal(7)], {})
+
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
+    )
+    # Must not raise, and must not create an item for a track that no longer exists.
+    coordinator.handle_frame(frame(), [], {})
+
+    assert store.count_items() == 0
+
+
+def test_capture_job_is_not_duplicated_while_one_is_outstanding(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
+    )
+    # Applying the "new" result itself queues the first capture job.
+    coordinator.handle_frame(frame(), [], {})
+    capture_jobs = [job for job in worker.submitted if job.kind == "capture"]
+    assert len(capture_jobs) == 1
+
+    # The item is now IDENTIFIED with a capture QUEUED; further frames must not
+    # submit a second capture job until the outstanding one's result lands.
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    capture_jobs = [job for job in worker.submitted if job.kind == "capture"]
+    assert len(capture_jobs) == 1
+
     item_id = store.list_present_items()[0].id
-    assert store.count_item_embeddings(item_id, "test-model") == 1
+    worker.push_result(
+        IdentificationResult(kind="capture", track_id=7, status="captured", item_id=item_id, reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    capture_jobs = [job for job in worker.submitted if job.kind == "capture"]
+    assert len(capture_jobs) == 2  # eligible again now that the prior capture resolved
 
-    scene_processor.prepare_reference.return_value = reference()
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [], {7: make_detection(7)})
-    assert store.count_item_embeddings(item_id, "test-model") == 2
 
-    scene_processor.prepare_reference.reset_mock()
-    coordinator.handle_frame(np.zeros((4, 4, 3), dtype=np.uint8), [], {7: make_detection(7)})
-    assert store.count_item_embeddings(item_id, "test-model") == 2
-    scene_processor.prepare_reference.assert_not_called()
+def test_moved_signal_before_identity_resolves_is_dropped_not_crashed(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    # Track 7 is ADDed but its resolve job has not returned a result yet, so it
+    # has no item_id. The tracker can still emit MOVED (placement/movement logic
+    # is independent of identity resolution); this must not raise.
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    coordinator.handle_frame(frame(), [moved_signal(7)], {7: make_detection(7)})
+
+    assert coordinator.event_engine.item_id_for_track(7) is None
+
+
+def test_moved_signal_after_identity_resolves_is_recorded_normally(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
+    item_id = store.list_present_items()[0].id
+
+    coordinator.handle_frame(frame(), [moved_signal(7)], {7: make_detection(7)})
+
+    assert store.get_item_history(item_id)[-1].event_type.value == "moved"

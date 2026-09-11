@@ -127,7 +127,13 @@ class EventEngine:
         signal: TrackSignal,
         decision: StateDecision,
     ) -> ItemEvent | None:
-        """Persist removal for an associated item while retaining its track binding."""
+        """Persist removal for an associated item and release its track binding.
+
+        The track itself is retiring (the tracker deletes its own record for it),
+        so its binding must not outlive it: a stale entry here would make
+        is_item_claimed report this item as claimed forever, blocking any future
+        RETURNED/associate resolution on a new track_id for the same item.
+        """
         if signal.signal_type is not TrackSignalType.REMOVE:
             raise ValueError("process_remove requires a REMOVE track signal")
         if decision.event_type is not ItemEventType.REMOVED:
@@ -144,6 +150,7 @@ class EventEngine:
             source_track_id=signal.track_id,
             detector_confidence=signal.detection.confidence,
         )
+        del self._item_ids_by_track_id[signal.track_id]
 
         return removed_event
 

@@ -61,6 +61,59 @@ def make_return_signal(
     )
 
 
+def make_remove_signal(signal_track_id: int, detection_track_id: int | None = None) -> TrackSignal:
+    detection = Detection(
+        track_id=detection_track_id if detection_track_id is not None else signal_track_id,
+        class_id=41,
+        class_name="cup",
+        confidence=0.5,
+        box=(10, 20, 110, 220),
+    )
+    return TrackSignal(
+        signal_type=TrackSignalType.REMOVE,
+        track_id=signal_track_id,
+        detection=detection,
+    )
+
+
+def test_remove_signal_marks_item_removed_and_releases_the_track_binding(
+    store: DatabaseStore,
+) -> None:
+    engine = EventEngine(store)
+    item, _ = engine.process_signal(make_add_signal(signal_track_id=7, detection_track_id=7))
+
+    removed_event = engine.process_signal(make_remove_signal(7))
+
+    saved_item = store.get_item(item.id)
+    assert saved_item is not None
+    assert saved_item.status is ItemStatus.REMOVED
+    assert removed_event.event_type is ItemEventType.REMOVED
+    # The retired track_id must not keep claiming the item, or no future track
+    # could ever be recognized as this item returning (see process_return below).
+    assert engine.item_id_for_track(7) is None
+    assert engine.is_item_claimed(item.id) is False
+
+
+def test_a_new_track_can_return_an_item_after_its_old_track_was_removed(
+    store: DatabaseStore,
+) -> None:
+    """Regression test: a stale track binding used to make is_item_claimed report
+    a removed item as permanently claimed, silently blocking every future RETURNED.
+    """
+    engine = EventEngine(store)
+    item, _ = engine.process_signal(make_add_signal(signal_track_id=7, detection_track_id=7))
+    engine.process_signal(make_remove_signal(7))
+
+    assert engine.is_item_claimed(item.id, excluding_track_id=99) is False
+    returned_event = engine.process_return(make_return_signal(item.id, signal_track_id=99, detection_track_id=99))
+
+    saved_item = store.get_item(item.id)
+    assert saved_item is not None
+    assert saved_item.status is ItemStatus.PRESENT
+    assert returned_event.event_type is ItemEventType.RETURNED
+    assert engine.item_id_for_track(99) == item.id
+
+
 def test_add_signal_creates_linked_item_and_event(store: DatabaseStore) -> None:
     engine = EventEngine(store)
 
