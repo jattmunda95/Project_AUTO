@@ -28,6 +28,8 @@ class EventEngine:
     def __init__(self, store: DatabaseStore) -> None:
         """Retain the store and start with no track-to-item associations."""
         self.store = store
+        # Capture dimensions are in-memory context for event-only normalized areas.
+        self.frame_size: tuple[int, int] | None = None
         self._item_ids_by_track_id: dict[int, int] = {}
 
     def item_id_for_track(self, track_id: int) -> int | None:
@@ -86,6 +88,8 @@ class EventEngine:
             status=decision.status,
             source_track_id=signal.track_id,
             detector_confidence=signal.detection.confidence,
+            destination_box=signal.detection.box,
+            frame_size=self.frame_size,
         )
         self._item_ids_by_track_id[signal.track_id] = item.id
 
@@ -120,6 +124,7 @@ class EventEngine:
             destination_box=signal.destination_box,
             source_track_id=signal.track_id,
             detector_confidence=signal.detection.confidence,
+            frame_size=self.frame_size,
         )
 
     def process_remove(
@@ -149,6 +154,8 @@ class EventEngine:
             item_id=item_id,
             source_track_id=signal.track_id,
             detector_confidence=signal.detection.confidence,
+            source_box=signal.detection.box,
+            frame_size=self.frame_size,
         )
         del self._item_ids_by_track_id[signal.track_id]
 
@@ -176,6 +183,8 @@ class EventEngine:
             item_id=signal.item_id,
             source_track_id=signal.track_id,
             detector_confidence=signal.detection.confidence,
+            destination_box=signal.detection.box,
+            frame_size=self.frame_size,
         )
         self._item_ids_by_track_id[signal.track_id] = signal.item_id
 

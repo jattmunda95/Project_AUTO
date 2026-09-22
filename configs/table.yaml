@@ -1,2 +1,4 @@
 database:
   path: data/project_auto.db
+regions:
+  highlight_frames: 150

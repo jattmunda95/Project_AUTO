@@ -1,8 +1,8 @@
 source_model: models/yolo11s.pt
 openvino_model: models/yolo11s_openvino_model
-confidence: 0.35
+confidence: 0.18
 iou: 0.45
-image_size: 640
+image_size: 960
 device: cpu
 
 # Tracker behaviour

@@ -26,7 +26,8 @@ from project_auto.perception.detector import Detection, YoloDetector
 from project_auto.perception.scene_processor import SceneProcessor, SceneProcessorConfig
 from project_auto.perception.segmenter import SamSegmenter, SegmenterConfig
 from project_auto.perception.tracker import DetectionTracker
-from project_auto.utils.drawing import draw_detections
+from project_auto.utils.drawing import draw_detections, draw_regions
+from project_auto.region_queries import query_regions
 
 
 def run_app() -> None:
@@ -102,6 +103,9 @@ def run_app() -> None:
 
         with camera:
             print(f"Camera opened on device {camera.device}")
+            highlighted_regions = []
+            highlight_frames_left = 0
+            highlight_duration = int(table_settings.get("regions", {}).get("highlight_frames", 150))
             while True:
                 frame = camera.read()
                 detections = detector.detect(frame)
@@ -115,10 +119,20 @@ def run_app() -> None:
                 coordinator.handle_frame(frame, signals, detections_by_track_id)
 
                 debug_frame = draw_detections(frame, detections)
-                cv2.imshow("Project AUTO - press q to quit", debug_frame)
+                if highlight_frames_left > 0:
+                    debug_frame = draw_regions(debug_frame, highlighted_regions)
+                    highlight_frames_left -= 1
+                cv2.imshow("Project AUTO - q quit, w where item, r inspect region", debug_frame)
 
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
                     break
+                if key in (ord("w"), ord("r")):
+                    region_ids = query_regions(store, key)
+                    highlighted_regions = [
+                        region for region in store.list_regions() if region.id in region_ids
+                    ]
+                    highlight_frames_left = highlight_duration
     finally:
         cv2.destroyAllWindows()
         if "coordinator" in locals():

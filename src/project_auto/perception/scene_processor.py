@@ -19,7 +19,7 @@ app.py chooses when to call; store.py persists; the event layer chooses transiti
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -29,6 +29,8 @@ from numpy.typing import NDArray
 from PIL import Image
 
 from project_auto.memory.reid import GalleryEntry, ReidMatcher
+from project_auto.perception.descriptors import aspect_ratio as compute_aspect_ratio
+from project_auto.perception.descriptors import hsv_histogram
 from project_auto.perception.segmenter import SamSegmenter
 
 IdentityDecisionType = Literal["new", "existing", "pending"]
@@ -58,6 +60,10 @@ class PreparedReference:
 
     crop: Image.Image
     embedding: NDArray
+    aspect_ratio: float = 0.0
+    # Flattened H+S histogram, computed from the masked crop before background
+    # replacement so the fill colour never enters the distribution.
+    color_histogram: NDArray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,13 +125,23 @@ class SceneProcessor:
 
         crop = frame[y1:y2, x1:x2]
         mask = segmentation.mask[y1:y2, x1:x2]
-        background_rgb = np.array(self.config.background_color, dtype=np.uint8)
         crop_rgb = crop[:, :, ::-1]
+
+        # Computed on the foreground pixels before the fill colour is applied,
+        # so it never contaminates the color descriptor.
+        color_histogram = hsv_histogram(crop_rgb, mask).reshape(-1)
+
+        background_rgb = np.array(self.config.background_color, dtype=np.uint8)
         masked_rgb = np.where(mask[:, :, None], crop_rgb, background_rgb)
 
         image = Image.fromarray(masked_rgb)
         embedding = self._matcher.create_embedding(image)
-        return PreparedReference(crop=image, embedding=embedding)
+        return PreparedReference(
+            crop=image,
+            embedding=embedding,
+            aspect_ratio=compute_aspect_ratio(segmentation.box),
+            color_histogram=color_histogram,
+        )
 
     def process(
         self,
@@ -151,7 +167,19 @@ class SceneProcessor:
                 reference=None,
             )
 
-        match = self._matcher.match_candidate(reference.crop, gallery)
+        match = self._matcher.match_candidate(
+            reference.crop,
+            gallery,
+            aspect_ratio=reference.aspect_ratio,
+            color_histogram=reference.color_histogram,
+            source_track_id=source_track_id,
+        )
+        # TODO(UI): match.accepted is False both when nothing looked close (a
+        # genuine NEW item) and when a margin_threshold tie left two-or-more
+        # plausible items (see reid.py's TODO). Once the app has a UI, the
+        # margin-failure case should become its own "unknown" IdentityDecision
+        # carrying the tied item_ids, so a user can disambiguate, instead of
+        # both cases being flattened into "new" here.
         decision: IdentityDecisionType = "existing" if match.accepted else "new"
         print(
             f"[SceneProcessor] process: track_id={source_track_id} -> decision={decision} "

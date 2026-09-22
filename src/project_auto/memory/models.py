@@ -71,6 +71,18 @@ item_event_type = SqlEnum(
 )
 
 
+class Region(Base):
+    """A manually calibrated polygon in the fixed camera's pixel coordinates."""
+
+    __tablename__ = "regions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    polygon: Mapped[list[list[int]]] = mapped_column(JSON)
+    area_px: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class Item(Base):
     """One permanent physical object known to Project AUTO."""
 
@@ -91,6 +103,10 @@ class Item(Base):
         index=True,
     )
     identity_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_region_id: Mapped[int | None] = mapped_column(
+        ForeignKey("regions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    current_box: Mapped[list[int] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     # Normalized mean of compatible reference embeddings; maintained by the store.
     # Replace the list when updating it; in-place JSON edits are not tracked.
     item_prototype: Mapped[list[float] | None] = mapped_column(
@@ -142,6 +158,13 @@ class ItemEmbedding(Base):
     item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"))
     model_name: Mapped[str] = mapped_column(String(200))
     embedding: Mapped[list[float]] = mapped_column(JSON(none_as_null=True))
+    # Box width/height ratio at capture time; supplements embedding similarity.
+    aspect_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Flattened H+S histogram (row-major, descriptors.hsv_histogram's bin layout);
+    # reshaped back to 2D by callers before Bhattacharyya comparison.
+    color_histogram: Mapped[list[float] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     object_image_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -175,6 +198,15 @@ class ItemEvent(Base):
     )
     source_track_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     detector_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_region_id: Mapped[int | None] = mapped_column(
+        ForeignKey("regions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    destination_region_id: Mapped[int | None] = mapped_column(
+        ForeignKey("regions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Normalized box areas are meaningful-event evidence, never continuous observations.
+    source_box_area_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    destination_box_area_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
     source_region: Mapped[str | None] = mapped_column(String(200), nullable=True)
     destination_region: Mapped[str | None] = mapped_column(String(200), nullable=True)
     source_box: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)

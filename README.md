@@ -1,71 +1,62 @@
 # Project AUTO
 
-Project AUTO is a local computer-vision system that will remember where physical objects
-were last placed on a table.
+Project AUTO is a local, single-camera tabletop object-tracking and memory prototype. It combines YOLO11s/OpenVINO and BoT-SORT with asynchronous SAM2/DINOv2 identity matching, meaningful SQLite events, and manually calibrated polygon regions.
 
-## Implemented so far
+## Documentation
 
-- Webcam capture through OpenCV.
-- YOLO11s detection exported to and run through OpenVINO.
-- Structured detections and a live debug display.
-- SQLAlchemy/SQLite models for permanent items and meaningful item events.
-- Database operations for item creation, history, movement, and status changes.
+Open the [offline HTML portal](docs/index.html) or [Markdown index](docs/README.md). The 11 source-reviewed chapters cover architecture, module contracts, data, configuration, performance, operations, verification, and [region calibration/memory](docs/11-regions.md). Current development priorities are in [TASKS](src/project_auto/TASKS.md); [PROJECT_CONTEXT](src/project_auto/PROJECT_CONTEXT.md) is the compact architecture handoff.
 
-Tracking, state decisions, and ADD/MOVED/REMOVE persistence are connected to the live pipeline.
-Standalone ReID, SAM2 masking, reference models, and prototype calculation exist but are not
-connected to live identity decisions. Reliable recognition and the query interface remain pending.
+## Implemented
+
+- USB-camera capture with webcam fallback, detection and temporal lifecycle tracking.
+- Async segmentation, embeddings, prototype shortlisting and supplementary color/aspect scoring; NEW, RETURNED and already-present association paths.
+- Atomic item/lifecycle-event persistence, reference/prototype storage, and spatial state updated only at meaningful events.
+- Fixed-frame polygon calibration, region CRUD, current contents/location and historical activity/association queries.
+- OpenCV detection display, terminal query triggers, and temporary region highlights.
+
+The 14 September region implementation run passed 160 automated tests. Prior project notes report live ReID success, but current weighted thresholds, YOLO settings, physical-camera region calibration, and throughput still need hardware evaluation. Test counts are not an accuracy guarantee.
 
 ## Setup
 
-Create and activate a Python 3.10-3.13 virtual environment:
+Use Python 3.10-3.13 and an editable checkout:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e .
+python -m pip install -e ".[reid]"
+python -m pip install pytest
 ```
 
-Install the optional ReID/SAM dependencies when working on identity processing:
+The full live app requires the ReID extra. Model downloads/export may be needed before offline operation. Existing SQLite tables require deliberate migration when columns change: create_all creates missing tables but does not alter existing ones. Back up and inspect the intended database first; the [manual SQL](docs/manual_schema_update.sql) only applies to a specifically inspected old schema. See [recovery notes](docs/09-operations.md).
+
+## Calibrate, then run
+
+Calibration is a separate launch, not automatic tracking startup:
 
 ```powershell
-python -m pip install -e ".[reid]"
+python -m project_auto.region_calibration
 ```
 
-Existing databases need migration for the embedding/prototype schema before live use;
-`create_all()` does not add `items.item_prototype` to an existing table.
-
-Run the live application after preparing the database schema:
+Click vertices; u undoes; Enter/c closes the polygon and prompts for a unique name in the terminal; q exits. Saved polygons show outlines, labels and translucent fills. Keep the camera position and actual capture resolution fixed.
 
 ```powershell
 project-auto
 ```
 
-Press `q` while the camera window is focused to stop it.
+In the tracking window, w asks for item ID/exact name, r inspects a region by name, and q quits. Terminal prompts pause the capture loop. Query highlights last 150 frames by default.
 
-## Runtime configuration
+## Configuration and boundaries
 
-- `configs/camera.yaml` controls the camera device, resolution, and FPS.
-- `configs/perception.yaml` controls model paths and inference thresholds.
-- On first run, Ultralytics downloads `models/yolo11s.pt` and exports
-  `models/yolo11s_openvino_model/`. Later runs reuse the exported model.
+All six YAML files are covered by the [configuration reference](docs/06-configuration.md). Current YOLO confidence is 0.18 and image_size is 960; agnostic_nms inherits the inspected installed-library default False. ReID acceptance_threshold 0.55 and margin_threshold 0.15 are provisional. Camera capture is requested at 1280 x 720, 30 FPS; actual throughput is unmeasured.
 
-## Current development task
+Tracker code performs no database access or SAM/ReID inference. Geometry is database-independent; DatabaseStore owns SQL, and EventEngine selects meaningful lifecycle writes. Removed items have no current region. Natural-language UI, 3D mapping, automatic migrations and polygon versioning are not implemented.
 
-The next architecture uses an app coordinator to request scene processing after tracker
-confirmation, before creating a permanent item. Scene processing prepares crops and returns
-identity decisions; the event layer chooses ADD, RETURNED, or association only. The tracker
-does not call image models or persistence. Implementation of this integration is deferred.
-
-See `src/project_auto/TASKS.md` for scope and `src/project_auto/PROJECT_CONTEXT.md` for
-pending retries, gallery ownership, and collection of six spaced reference crops per new item.
-
-## Tests
-
-Run the persistent-memory database suite:
+## Verification and documentation build
 
 ```powershell
-python -m pytest -q tests\test_memory_database.py
+python -m pytest -q
+python docs/build_docs.py
+python docs/check_docs.py
 ```
 
-The current virtual environment may require pytest to be installed separately before that
-command is available.
+Edit the numbered Markdown chapters and regenerate HTML; no server or extra documentation dependency is needed.

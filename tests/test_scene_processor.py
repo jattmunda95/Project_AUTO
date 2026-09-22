@@ -123,7 +123,13 @@ def test_process_returns_existing_on_accepted_match(
     assert result.similarity == pytest.approx(0.9)
     assert result.source_track_id == 3
     assert result.reference is not None
-    matcher.match_candidate.assert_called_once_with(result.reference.crop, gallery)
+    matcher.match_candidate.assert_called_once_with(
+        result.reference.crop,
+        gallery,
+        aspect_ratio=result.reference.aspect_ratio,
+        color_histogram=result.reference.color_histogram,
+        source_track_id=3,
+    )
 
 
 def test_process_returns_new_on_rejected_match(

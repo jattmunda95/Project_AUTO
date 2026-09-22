@@ -124,8 +124,7 @@ class IdentificationWorker:
                 track_id=job.track_id,
                 status="error",
                 item_id=job.item_id,
-                failure_reason=repr(exc),
-            )
+                failure_reason=repr(exc),            )
         logger.debug(
             "identification.job_done track_id=%s kind=%s status=%s duration_s=%.3f",
             job.track_id,
@@ -187,6 +186,8 @@ class IdentificationWorker:
             embedding=reference.embedding,
             model_name=self.reid_model_name,
             target_count=self.reference_target_count,
+            aspect_ratio=reference.aspect_ratio,
+            color_histogram=reference.color_histogram,
         )
         if not saved:
             return IdentificationResult(

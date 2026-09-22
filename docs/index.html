@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Project AUTO technical documentation: local computer vision, permanent object identity, and event memory."><title>Documentation home | Project AUTO</title><link rel="stylesheet" href="assets/docs.css"><script src="assets/docs.js" defer></script></head>
+<body><a class="skip" href="#main">Skip to content</a><div class="layout"><aside class="sidebar"><a class="brand" href="index.html">PROJECT AUTO</a><div class="eyebrow">Engineering documentation</div><nav aria-label="Documentation"><a href="index.html" aria-current="page">Documentation home</a><div class="nav-label">Understand</div><a href="01-overview.html">01 &nbsp; Overview</a><div class="nav-label">Technical reference</div><a href="02-architecture.html">02 &nbsp; Architecture</a><a href="03-modules.html">03 &nbsp; Modules</a><a href="04-stack.html">04 &nbsp; Stack &amp; dependencies</a><a href="05-data.html">05 &nbsp; Data &amp; contracts</a><a href="06-configuration.html">06 &nbsp; Configuration</a><a href="07-performance.html">07 &nbsp; Performance</a><a href="08-scope.html">08 &nbsp; Scope &amp; assumptions</a><div class="nav-label">Operate & maintain</div><a href="09-operations.html">09 &nbsp; Setup &amp; operations</a><a href="10-verification.html">10 &nbsp; Verification</a><a href="11-regions.html">11 &nbsp; Regions &amp; spatial memory</a></nav><div class="meta">Version 0.1.0<br>Source reviewed 14 September 2026<br>Local prototype · CPU inference<br><br><a href="../README.md">Repository README</a></div></aside><main id="main"><div class="topline"><span>PROJECT AUTO / DOCUMENTATION</span><span>Reviewed 14 September 2026</span></div><section class="hero"><span class="badge">Local computer vision · v0.1.0</span><h1>From seeing objects<br>to remembering them.</h1><p class="lead">A structured guide to Project AUTO: what it does, how its components work together, and what it takes to operate and validate it.</p><div class="summary"><div><strong>11 focused chapters</strong><span>Overview through implementation</span></div><div><strong>One local pipeline</strong><span>Camera, perception, identity, memory</span></div><div><strong>Evidence-led status</strong><span>Implemented, configured, and pending</span></div></div></section>
+<section aria-labelledby="routes"><h2 id="routes">Choose your reading route</h2><div class="routes"><div class="route"><strong>Understand the project</strong><p>Purpose, scope, and delivery maturity.</p><a href="01-overview.html">Start with the overview →</a></div><div class="route"><strong>Explore the engineering</strong><p>Architecture, modules, data, and stack.</p><a href="02-architecture.html">Follow the pipeline →</a></div><div class="route"><strong>Run and validate</strong><p>Setup, configuration, and verification.</p><a href="09-operations.html">Open the operations guide →</a></div></div></section>
+<div class="notice"><strong>Current maturity:</strong> live identity, event persistence, polygon regions, and console spatial queries are integrated. Live region validation, recognition calibration, measured performance, and deliberate schema recovery remain open. See the relevant chapter before treating a capability as production-ready.</div>
+<section aria-labelledby="library"><h2 id="library">Documentation library</h2><div class="search"><label for="search">Search all chapter content</label><input id="search" type="search" placeholder="Try: database, queue, dependencies, camera…" autocomplete="off" aria-describedby="result-count"><p class="count" id="result-count" role="status" aria-live="polite">11 of 11 chapters</p><noscript><p>Search needs JavaScript; all chapters remain available below.</p></noscript></div><div class="cards"><article class="card" data-search="project overview # project overview
+
+project auto is a local computer-vision prototype that remembers physical objects observed on a table and records meaningful changes in their presence and placement. it combines live camera detection, temporary tracking, appearance-based identity matching, and a durable sqlite event history.
+
+## purpose and audience
+
+the intended outcome is to answer where an object was last placed, even after it disappears from view. the current application includes polygon calibration and temporary console queries for item location, region contents, activity, and historical association; a richer query ui remains deferred.
+
+this documentation describes the source snapshot inspected on 14 september 2026, package version 0.1.0. it is organized for three levels of use: stakeholders start here and with scope; engineers read architecture, modules, and data; operators use setup, configuration, and verification.
+
+## capability status
+
+| capability | current status | practical meaning |
+| --- | --- | --- |
+| live camera input | implemented | tries configured usb camera, then webcam; verifies an actual frame |
+| detection and temporary tracking | implemented | yolo11s/openvino with ultralytics bot-sort |
+| object lifecycle | implemented | time-confirmed addition, stable movement, and absence-based removal |
+| permanent identity | integrated, calibration pending | sam2 masking and dinov2 gallery matching run on a background worker |
+| return recognition | integrated | a match to a removed item records returned against its existing permanent id |
+| persistent memory | implemented | items, events, references, prototypes, and polygon regions in sqlite |
+| user display | debug interface | opencv detections, keyboard-triggered console queries, temporary region highlights |
+| location questions and semantic regions | implemented; hardware validation pending | separate polygon calibration; event-based current location and region-history queries |
+| production accuracy or performance sla | not established | no measured benchmark report or calibrated recognition target |
+
+project task notes report successful real-hardware addition, re-identification, and return scenarios. these are historical reports, not a fresh hardware validation performed for this documentation.
+
+## a typical interaction
+
+an object becomes visible and receives a temporary bot-sort track id. after temporal confirmation, the application schedules identity processing. a usable masked view is compared with saved references. an unmatched view creates a permanent item and added event; a match to a removed item creates returned; a match to an already present item associates the track without another addition event. subsequent stable movement or sustained absence records moved or removed.
+
+a bad view defers identity rather than proving a new object exists. detection class names such as a cup label are not unique physical identities. likewise, a tracker id is not a permanent item id.
+
+## reading routes
+
+- stakeholders: [overview](01-overview.md), [scope and assumptions](08-scope.md), [performance](07-performance.md).
+- developers: [architecture](02-architecture.md), [module reference](03-modules.md), [data contracts](05-data.md), [verification](10-verification.md).
+- operators: [setup and operations](09-operations.md), [configuration](06-configuration.md), [dependencies](04-stack.md).
+
+## evidence and precedence
+
+current executable code and yaml settings are the primary evidence. package declarations establish dependency ranges, not the exact versions installed on a machine. historical readme/context/task statements may describe earlier stages; where they conflict, this documentation follows the inspected implementation and labels unresolved gaps.
+
+sources: [application composition](../src/project_auto/app.py), [package metadata](../pyproject.toml), [project task history](../src/project_auto/tasks.md).
+
+spatial memory uses the permanently fixed camera frame, not world coordinates. see [region workflow and contracts](11-regions.md). the latest implementation test run on 14 september passed 160 tests; live region calibration is not yet tested. current yolo settings are confidence 0.18 and image size 960. weighted reid acceptance 0.55 and margin 0.15 remain provisional.
+"><span class="number">Chapter 01</span><h2><a href="01-overview.html">Project overview</a></h2><p>Purpose, current capabilities, maturity, and reading routes for each audience.</p><a class="source" href="01-overview.md">Markdown source</a></article><article class="card" data-search="architecture and runtime flow # architecture and runtime flow
+
+## system boundary
+
+the application is one local python process with an opencv display, one camera source, a main processing thread, one identification worker thread, and a sqlite file. model acquisition can require network access during preparation. the configured inference devices are cpu; no cloud inference service is called by the application pipeline.
+
+```text
+main thread
+camera -&gt; yolo11s / openvino / bot-sort -&gt; detectiontracker
+                                           |
+                               add / moved / remove
+                                           |
+                                  identitycoordinator
+                                    |            ^
+                         copied frame jobs    results
+                                    v            |
+worker thread                  bounded queue -&gt; sam2 -&gt; dinov2
+                                              |          |
+                                      reference saves   gallery match
+                                              |
+                                            sqlite
+
+main thread: coordinator -&gt; eventengine -&gt; statedecision / sqlite
+             detections -&gt; draw_detections -&gt; opencv window
+```
+
+## startup and shutdown
+
+the console entry point calls `main.main()`, which calls `app.run_app()`. paths are resolved relative to the source checkout. startup reads the six yaml configuration files through the app and model constructors, constructs the database store, calls schema creation, constructs perception models and collaborators, and starts the worker. the worker loads its gallery from the store. the camera context then opens capture and the loop begins.
+
+each iteration reads a frame, detects objects, updates the lifecycle tracker, passes signals and detections to the coordinator, and draws the debug frame. pressing q exits; w/r trigger blocking terminal queries and temporary polygon highlights. cleanup destroys opencv windows, asks the worker to stop, and disposes the database engine; the camera context releases capture.
+
+the worker shutdown uses a blocking sentinel enqueue followed by a timed join. it is not a guaranteed five-second total shutdown: a full queue can delay enqueue, and queued work can precede the sentinel.
+
+## responsibility and thread ownership
+
+| concern | owner | execution |
+| --- | --- | --- |
+| frame acquisition, yolo and bot-sort | camera / yolodetector | main thread |
+| temporal lifecycle and movement | detectiontracker | main thread |
+| submission, retries, bindings, result application | identitycoordinator / referencemanager | main thread |
+| sam2, dinov2, gallery comparison | identificationworker / sceneprocessor / reidmatcher | worker thread |
+| reference persistence and gallery refresh | identificationworker / databasestore | worker thread |
+| item creation, status lookup, lifecycle persistence | coordinator / eventengine / databasestore | main thread |
+| drawing, keyboard and terminal queries | app / region_queries / drawing | main thread |
+| region resolution and live spatial updates | databasestore calling pure memory.regions | inside main-thread lifecycle transactions |
+| manual polygon calibration | region_calibration / camera / databasestore | separate process launch, no model inference |
+
+queue submission and polling are non-blocking. this does not make the whole frame loop non-blocking: camera reads, detection, drawing, frame copies, and lifecycle database operations still take time on the main thread. cpu inference on the worker can also compete for shared compute resources.
+
+## identity decisions
+
+1. tracker add means temporally confirmed, not necessarily a new physical object.
+2. the coordinator rejects invalid, small, low-confidence, or edge-clipped candidates before submitting resolve work.
+3. a copied frame and box enter the bounded job queue. referencemanager prevents overlapping jobs for a track while queued.
+4. sam2 segments the full frame using the box prompt. sceneprocessor extracts the box crop, retains true mask pixels, fills the background, and prepares an rgb image.
+5. dinov2 extracts a normalized cls-token embedding. matching shortlists items by prototype, then combines each shortlisted item&#x27;s top-k dino score with color/aspect scores when available and checks both score and runner-up margin thresholds.
+6. the worker returns new, existing, pending, or error. the main thread creates or associates the item and dispatches the appropriate event.
+7. a precomputed reference can be submitted for saving. further visible-frame captures are spaced by configuration; accepted saves refresh the worker&#x27;s gallery.
+
+the worker gallery includes all statuses for the configured model. the coordinator checks the current item status and active claims before accepting an existing-item result.
+
+## architectural invariants and limits
+
+- tracking never performs sam/reid inference or database writes.
+- permanent identity belongs to `item.id`; `source_track_id` is diagnostic/session metadata.
+- persistence records meaningful events and references, not every video frame.
+- a pending view does not produce an added event.
+- removal releases the event engine&#x27;s track binding while preserving item history.
+- moved before identity resolution is currently dropped, not buffered or replayed.
+- results for inactive track ids are rejected. there is no generation token in job/result contracts, so protection against delayed results after numeric track-id reuse is not comprehensive.
+
+sources: [app](../src/project_auto/app.py), [coordinator](../src/project_auto/events/coordinator.py), [worker](../src/project_auto/events/identification_worker.py), [scene processing](../src/project_auto/perception/scene_processor.py).
+
+## spatial memory boundary
+
+eventengine passes add/returned destination boxes, moved source/destination boxes, and remove source evidence to existing store operations. the coordinator supplies actual frame dimensions in memory. databasestore resolves centroid membership via the pure geometry module and commits region ids, name snapshots, normalized areas, and item.current_box/current_region_id together. removed clears both live fields; no tracker or per-frame spatial writes are introduced.
+
+the normal app does not automatically run calibration. a separate region_calibration entry point uses the same camera abstraction and yaml configuration; w/r queries use store apis and hold highlight state only in app memory. full contracts and flow: [regions and spatial memory](11-regions.md).
+"><span class="number">Chapter 02</span><h2><a href="02-architecture.html">Architecture and runtime flow</a></h2><p>Runtime flow, main-thread and worker responsibilities, identity decisions, and boundaries.</p><a class="source" href="02-architecture.md">Markdown source</a></article><article class="card" data-search="module reference # module reference
+
+all package paths below are relative to `src/project_auto`. modules separate capture, perception, lifecycle decisions, orchestration, and persistence. the production entry point is `project-auto`, not the research notebooks.
+
+## application and capture
+
+| module | public entry points | responsibility and boundary |
+| --- | --- | --- |
+| [main.py](../src/project_auto/main.py) | main | console entry point; delegates to run_app |
+| [app.py](../src/project_auto/app.py) | run_app | loads services, capture/display, w/r console queries and temporary region highlights; owns no region sql |
+| [region_calibration.py](../src/project_auto/region_calibration.py) | run_calibration | separate live-camera polygon editor; reuses camera and store; terminal naming |
+| [region_queries.py](../src/project_auto/region_queries.py) | query_regions | prints item location or region contents/activity/history; returns highlight ids |
+| [capture/camera.py](../src/project_auto/capture/camera.py) | cameraconfig, camera.open/read/close | configures properties before the first read; verifies devices in fallback order; returns bgr frames; supports a context manager |
+
+## perception
+
+| module | public types / operations | input and output |
+| --- | --- | --- |
+| [perception/detector.py](../src/project_auto/perception/detector.py) | detection, yolodetector.detect | bgr frame to class/confidence/xyxy box/optional temporary id; loads or exports openvino model; runs persistent bot-sort |
+| [perception/tracker.py](../src/project_auto/perception/tracker.py) | detectiontracker.update, tracksignal, trackstatus | detection list to immutable add/moved/remove signals; ignores detections without ids; maintains candidate, stable, moving, and missing lifecycle |
+| [perception/segmenter.py](../src/project_auto/perception/segmenter.py) | segmenterconfig, samsegmenter.segment, segmentation | uint8 bgr frame plus integer boxes to frame-sized boolean masks and scores; true retains foreground; selects best finite nonempty mask |
+| [perception/scene_processor.py](../src/project_auto/perception/scene_processor.py) | sceneprocessor.prepare_reference/process, preparedreference, identitydecision | prepares masked rgb crop, normalized embedding, aspect ratio and foreground color histogram; proposes new/existing/pending; owns no scheduling or persistence |
+
+tracker confirmation lasts two seconds with at most 15 cumulative candidate misses per attempt. a 16th miss resets the attempt. stable placement uses a centered buffer, and movement must stop visibly for the configured interval before moved. absence of a stable or moving track for two seconds emits remove. these are heuristics in image coordinates, not physical motion measurement.
+
+## orchestration and events
+
+| module | main contracts | responsibility |
+| --- | --- | --- |
+| [events/coordinator.py](../src/project_auto/events/coordinator.py) | identitycoordinator.handle_frame/shutdown | applies results, submits resolve/capture jobs, schedules retries, routes lifecycle events, guards active claims |
+| [events/identification.py](../src/project_auto/events/identification.py) | identificationjob, identificationresult, identificationstate, referencemanager | immutable cross-thread message containers and per-track bookkeeping; queue eligibility and cooldowns |
+| [events/identification_worker.py](../src/project_auto/events/identification_worker.py) | identificationworkerprotocol, identificationworker.start/stop/submit/poll_results | one worker, bounded jobs, unbounded results, gallery snapshot, model work and reference persistence |
+| [events/event_engine.py](../src/project_auto/events/event_engine.py) | eventengine.process_signal/process_add/process_move/process_remove/process_return | resolves session track bindings and performs atomic lifecycle store operations; rejects conflicting claims |
+
+worker exceptions during a job become error results with logged diagnostics. initial gallery loading occurs before the per-job exception wrapper; startup/schema failures can therefore stop the worker rather than becoming a normal per-track retry.
+
+## memory and presentation
+
+| module | main contracts | responsibility |
+| --- | --- | --- |
+| [memory/reid.py](../src/project_auto/memory/reid.py) | reidconfig, galleryentry, reidmatch, reidmatcher | loads dinov2 once, normalizes embeddings, ranks prototypes and reference similarities; db-agnostic |
+| [memory/models.py](../src/project_auto/memory/models.py) | region, item, itemembedding, itemevent, itemstatus, itemeventtype | typed sqlalchemy schema, constraints, indexes, relationships |
+| [memory/store.py](../src/project_auto/memory/store.py) | databasestore | short-lived sessions, lifecycle/spatial transactions, region crud and queries, vector/descriptor persistence, prototypes and gallery snapshots |
+| [memory/state_machine.py](../src/project_auto/memory/state_machine.py) | statedecision, decide_track_signal, decide_return_signal | maps supported signals to status and event type; does not infer identity |
+| [utils/drawing.py](../src/project_auto/utils/drawing.py) | draw_detections, draw_regions | returns annotated copies; polygons use translucent fills, outlines, names and optional bgr colors |
+
+## descriptors and supporting components
+
+[perception/descriptors.py](../src/project_auto/perception/descriptors.py) implements pure supplementary descriptors. aspect ratio is max(width/height, height/width), so a 90-degree box rotation has the same ratio; it is not absolute size. foreground rgb pixels produce a normalized 32 x 32 hue/saturation histogram before background replacement. color similarity is 1 minus bhattacharyya distance; aspect similarity uses gaussian falloff with sigma 0.25. these descriptors are now wired through preparation, worker saves, gallery loading, and matching. calibration/held-out accuracy remains unverified.
+
+the matcher first shortlists by dino prototypes. it averages top-k scores separately for dino, valid color references, and valid aspect references. with both supplementary scores available, final score = 0.65 * dino + 0.20 * color + 0.15 * aspect; otherwise it falls back to dino alone. acceptance requires the configured score threshold and best-minus-runner-up margin; a single candidate has no margin competitor. optional csv output records diagnostic match scores. margin rejection currently yields no accepted identity, which sceneprocessor interprets as new; an ambiguity/confirmation flow is still deferred.
+
+| path | status | usage |
+| --- | --- | --- |
+| [memory/regions.py](../src/project_auto/memory/regions.py) | implemented, pure geometry | regiongeometry, validate_polygon, polygon_area, point_in_polygon, resolve_region, box_area_fraction; no sql/session imports |
+| [scripts/define_regions.py](../scripts/define_regions.py) | thin wrapper | delegates to region_calibration.run_calibration |
+| [display/viewer.py](../src/project_auto/display/viewer.py) | empty | actual display currently lives in app.py |
+| [utils/logging.py](../src/project_auto/utils/logging.py) | empty | no centralized logging setup; runtime mixes print and logging |
+| [scripts/run_camera.py](../scripts/run_camera.py) | implemented wrapper | calls the main application |
+| [scripts/run_video.py](../scripts/run_video.py) | empty | no video-file execution path provided here |
+| [scripts/benchmark_local.py](../scripts/benchmark_local.py) | empty | no benchmark implementation |
+| [cmaera_no_identifier.py](../cmaera_no_identifier.py) | standalone diagnostic | cycles camera indexes 0 through 4; opens camera windows |
+| notebooks/reid_tuning | research assets | reference/query examples, notebooks, embeddings, and result images; not an automated production evaluation |
+| tests | automated checks | synthetic/unit/persistence coverage; see verification chapter |
+
+do not infer implemented behavior from a placeholder filename or a historical task entry. package egg-info directories are generated metadata; `pyproject.toml` is the maintained dependency source.
+
+the region store api and detailed event semantics are documented in [chapter 11](11-regions.md). geometry, current contents, historical association, and activity remain distinct responsibilities.
+"><span class="number">Chapter 03</span><h2><a href="03-modules.html">Module reference</a></h2><p>A source-linked catalog of implemented modules, interfaces, scripts, and placeholders.</p><a class="source" href="03-modules.md">Markdown source</a></article><article class="card" data-search="technology stack and dependencies # technology stack and dependencies
+
+## stack by layer
+
+| layer | technology | project use |
+| --- | --- | --- |
+| language and packaging | python, setuptools, editable src-layout install | local cli application, typed data contracts |
+| camera and visualization | opencv | camera capture, image operations, desktop debug window |
+| detection inference | ultralytics yolo11s + openvino | source weights exported to local openvino format |
+| temporary tracking | ultralytics bot-sort | persistent ids across frame detections |
+| segmentation | transformers sam2 + pytorch | box-prompted masks on cpu |
+| identity embeddings | transformers dinov2 + pytorch | normalized image embeddings on cpu |
+| numeric and image processing | numpy, pillow | array operations, cosine similarity, rgb crops |
+| region geometry | pure python ray casting and shoelace formula | fixed-frame polygon validation/resolution; no shapely dependency |
+| storage | sqlalchemy 2.x + sqlite | local relational memory with json vectors, boxes and polygons |
+| configuration | yaml / pyyaml | camera, models, timing, thresholds, database path |
+| concurrency | python threading and queue | one background identification worker |
+| tests | pytest | deterministic behavior and persistence checks |
+| documentation | markdown, generated html/css/javascript | offline portal; standard-library python builder |
+
+## declared runtime dependencies
+
+these are repository declarations, not an installed environment inventory or a lockfile.
+
+| dependency | declared range | why it is needed |
+| --- | --- | --- |
+| python | &gt;=3.10,&lt;3.14 | supported interpreter range in package metadata |
+| opencv-python | &gt;=4.10 | capture and opencv display |
+| openvino | &gt;=2024.0 | optimized detector runtime |
+| pyyaml | &gt;=6.0 | configuration loading |
+| ultralytics | &gt;=8.4 | yolo loading/export and bot-sort integration |
+| sqlalchemy | &gt;=2.0,&lt;3.0 | orm, sessions, schema and database operations |
+| torch | unpinned, reid extra | sam2 and dinov2 inference |
+| transformers | unpinned, reid extra | sam2model/sam2processor and automodel/autoimageprocessor |
+| pillow | unpinned, reid extra | pil images for preprocessing |
+| setuptools | &gt;=75, build dependency | setuptools.build_meta backend |
+
+the full live application imports and constructs sam2 and reid unconditionally. install `.[reid]` for the current live entry point even though packaging labels these dependencies optional. a base-only installation is not a complete live runtime.
+
+numpy is imported directly but is not explicitly declared in `pyproject.toml`; it currently relies on transitive installation. pytest is used by the test suite but has no declared test extra. ruff settings exist, but ruff is not declared as an installed development dependency. there is no dependency lockfile in the inspected repository; reproducibility requires recording a tested environment separately.
+
+## model and hardware dependencies
+
+| asset | configured value | acquisition / assumption |
+| --- | --- | --- |
+| detector source | models/yolo11s.pt | loaded through ultralytics; may be downloaded if absent |
+| detector export | models/yolo11s_openvino_model | reused if directory exists; otherwise exported dynamically |
+| segmentation model | facebook/sam2-hiera-base-plus | transformers from_pretrained; needs compatible library apis and cached/downloadable weights |
+| embedding model | facebook/dinov2-base | transformers from_pretrained; same cache/download consideration |
+| camera | usb index 0, fallback webcam index 1 | indices are machine-specific, not portable device identifiers |
+| target machine | lenovo yoga pro 7i, intel integrated graphics | project notes&#x27; target; no minimum ram/cpu or portable hardware qualification published |
+
+all configured model devices are cpu. the detector uses openvino while sam2 and dinov2 use pytorch; the presence of intel graphics does not imply that those models are gpu-accelerated.
+
+## environment assumptions
+
+the supported workflow is an editable checkout with its adjacent configs and models. packaged standalone distribution of those assets is not configured. initial installation/model preparation can use network access; offline operation needs cached assets verified beforehand. application data access depends on filesystem permissions, and the opencv window needs an interactive desktop session.
+
+library and model license review, exact transitive dependency inventory, and vulnerability auditing have not been performed as part of this documentation. no dependency versions were changed.
+
+sources: [pyproject.toml](../pyproject.toml), [detector](../src/project_auto/perception/detector.py), [segmenter](../src/project_auto/perception/segmenter.py), [reid](../src/project_auto/memory/reid.py).
+"><span class="number">Chapter 04</span><h2><a href="04-stack.html">Technology stack and dependencies</a></h2><p>Technology layers, declared version ranges, model assets, and environment requirements.</p><a class="source" href="04-stack.md">Markdown source</a></article><article class="card" data-search="data model and contracts # data model and contracts
+
+## persistent entities
+
+```text
+items (permanent identity)
+  | 1                       | 1
+  +----&lt; item_events        +----&lt; item_embeddings
+         meaningful history        model-specific references
+
+regions (logical polygons)
+  +----&lt; items.current_region_id
+  +----&lt; item_events.source_region_id / destination_region_id
+```
+
+| table | principal fields | purpose |
+| --- | --- | --- |
+| items | id, class_name, display_name, status, first_seen_at, last_seen_at, identity_confidence, item_prototype, current_region_id, current_box, created_at, updated_at | durable physical-object identity and current stored state |
+| item_events | id, item_id, event_type, occurred_at, started_at, finished_at, source_track_id, detector_confidence, source_region_id, destination_region_id, source_region, destination_region, source_box, destination_box, source_box_area_fraction, destination_box_area_fraction, evidence paths, notes | meaningful lifecycle and placement history |
+| item_embeddings | id, item_id, model_name, embedding, aspect_ratio, color_histogram, object_image_path, created_at | json reference vectors with optional supplementary descriptors |
+| regions | id, unique name, polygon, area_px, created_at | fixed-frame integer polygons with stored shoelace area |
+
+items have one-to-many relationships to both child tables. foreign keys are enabled for every store connection. deleting an item cascades to its events and embeddings. sqlalchemy string enums constrain stored status/event values. indexes include event item/time and embedding item/model lookup pairs.
+
+evidence fields hold object-image, context-image, or video-clip paths, not binary media. their presence in the schema does not mean the live pipeline writes evidence files: current worker reference saves provide vectors, descriptors and model names, without saving the pil crop to disk.
+
+## states and events
+
+| trigger | resulting status | persisted event |
+| --- | --- | --- |
+| confirmed view resolved as new | present | added |
+| existing removed identity matched | present | returned |
+| existing present identity matched | unchanged | none; associate track only |
+| existing occluded identity matched | unchanged by association path | none; automatic occlusion restoration is not wired |
+| known track completes stable movement | present | moved |
+| known stable/moving track absent beyond timeout | removed | removed |
+| explicit store status operations | present or occluded as requested | status_changed where applicable |
+
+occluded is a modeled status with store operations, but the live tracker does not emit general occlusion/status-change behavior. absence heuristics therefore cannot reliably distinguish a long occlusion from physical removal.
+
+## persistence semantics
+
+`add_item_with_event()` commits a new item and its initial event together. status and movement operations update the item and append the event transactionally. event intervals require both timezone-aware endpoints in chronological order. bounding boxes are stored separately from optional semantic regions. history is returned chronologically, and present-item queries include occluded items.
+
+`last_seen_at` is updated by store operations; it is not a continuously persisted per-frame heartbeat. location information is event-oriented, especially movement source/destination boxes. item.current_box/current_region_id now store the latest meaningful spatial belief. a pixel-space polygon resolver and temporary console queries are implemented; no world-coordinate calibration exists.
+
+`save_item_embedding()` validates and normalizes a reference and updates the normalized-mean prototype atomically. `add_reference_if_needed()` additionally enforces the caller&#x27;s target count. `load_reid_gallery()` creates an independent float32 snapshot grouped by item, filtered by model and optionally status. compatible model spaces and vector dimensions are required; changing preprocessing under the same model name is not fully captured by the schema.
+
+## in-memory contracts
+
+| contract | essential contents | meaning |
+| --- | --- | --- |
+| detection | optional track_id, class_id/name, confidence, integer xyxy box | one frame&#x27;s detector result |
+| tracksignal | signal type, track_id, detection, optional item_id and movement metadata | lifecycle proposal; add alone does not establish identity |
+| preparedreference | rgb pil crop, normalized embedding, aspect ratio, color histogram | usable masked view available for matching/saving |
+| identitydecision | new/existing/pending, source_track_id, item_id, similarity, reference | scene-processing proposal, not a committed database result |
+| identificationjob | resolve/capture, track_id, optional item_id, frame, box, precomputed reference | work crossing into the background thread |
+| identificationresult | kind, track_id, status, item_id, similarity, reference, failure_reason | worker result consumed by the coordinator |
+| galleryentry | item_id, reference matrix, optional prototype, aspect_ratios and flattened color_histograms arrays | matching snapshot for one permanent item |
+
+frames are uint8 bgr arrays shaped height x width x 3. detection boxes use frame-pixel xyxy coordinates. sam masks are frame-sized boolean arrays; true means retain the object. dino input crops are rgb. monotonic time measures lifecycle/cooldown durations, while event timestamps use utc-aware datetimes at the api boundary.
+
+## schema evolution
+
+aspect and histogram descriptors are integrated through preparedreference, worker capture, optional itemembedding fields, and gallery arrays. missing legacy descriptors are represented as nan in gallery arrays; the matcher uses dino-only scoring when both supplementary scores are not available. histogram bin-layout/preprocessing version is not persisted; compatible capture conventions remain required.
+
+`create_schema()` calls base.metadata.create_all: missing tables are created, existing tables are not altered. existing databases need deliberate schema migration or an explicitly chosen fresh database. no automatic migration, destructive reset, or schema-version framework is provided. the inspected-schema [manual sql](manual_schema_update.sql) covers eight missing nullable columns and region indexes; it was tested on a copy but not applied to the live file in this session. always reinspect before using it; see [startup incident and recovery](09-operations.md).
+
+## spatial state and historical relationships
+
+all region fks use on delete set null; historical event strings survive region deletion/renaming. add/moved/returned set current_box/current_region_id and update last_seen_at within the event transaction. removed preserves source evidence and clears current fields. the generic record_event api remains an append-only historical operation rather than a live-state transition. store queries distinguish current contents, historical associated items, and event activity by their respective item/event fks. full field semantics, normalized-area formula, conservative legacy fallback, and api signatures: [region memory](11-regions.md).
+
+sources: [models](../src/project_auto/memory/models.py), [store](../src/project_auto/memory/store.py), [event engine](../src/project_auto/events/event_engine.py), [job contracts](../src/project_auto/events/identification.py).
+"><span class="number">Chapter 05</span><h2><a href="05-data.html">Data model and contracts</a></h2><p>Permanent identities, event history, reference vectors, message contracts, and schema evolution.</p><a class="source" href="05-data.md">Markdown source</a></article><article class="card" data-search="configuration reference # configuration reference
+
+values below are the working-tree yaml settings inspected for this documentation. they are configured defaults, not calibrated requirements or measured output. restart the application after changes; no live reload is implemented.
+
+## camera and database
+
+| file / key | current value | interpretation |
+| --- | --- | --- |
+| camera.yaml: usb_device | 0 | first camera attempted |
+| camera.yaml: webcam_device | 1 | fallback camera |
+| camera.yaml: width / height | 1280 / 720 | requested capture resolution; device negotiation can differ |
+| camera.yaml: fps | 30 | requested capture rate, not application throughput |
+| table.yaml: database.path | data/project_auto.db | sqlite path resolved from project root |
+| table.yaml: regions.highlight_frames | 150 | frames to show query-selected polygons; in-memory state only |
+
+## detector and lifecycle: perception.yaml
+
+| key | current value | interpretation |
+| --- | --- | --- |
+| source_model | models/yolo11s.pt | yolo source weights |
+| openvino_model | models/yolo11s_openvino_model | export directory reused when present |
+| confidence | 0.18 | detector confidence filter |
+| iou | 0.45 | inference overlap threshold passed to ultralytics |
+| image_size | 960 | inference image-size argument; not camera resolution |
+| device | cpu | inference device argument |
+| candidate_confirmation_seconds | 2.0 | confirmation duration before add signal |
+| max_candidate_missing_frames | 15 | cumulative misses tolerated per candidate attempt |
+| removal_timeout_seconds | 2.0 | confirmed-track absence before remove |
+| movement_buffer_scale | 1.2 | centered stable placement buffer scale |
+| movement_stop_tolerance_pixels | 5.0 | allowed center displacement during stop confirmation |
+| movement_stopped_confirmation_seconds | 1.0 | visible stopped duration before moved |
+
+bot-sort&#x27;s `botsort.yaml` name and `persist=true` are selected in detector code rather than these project yaml files. agnostic_nms is not passed explicitly; the installed ultralytics default inspected in .venv/lib/site-packages/ultralytics/cfg/default.yaml is false (class-aware nms). this is an installed-library default, not a pinned project setting.
+
+## identity models
+
+| file / key | current value | interpretation |
+| --- | --- | --- |
+| segmenter.yaml: model_name | facebook/sam2-hiera-base-plus | sam2 checkpoint |
+| segmenter.yaml: device | cpu | pytorch segmentation device |
+| reid.yaml: model_name | facebook/dinov2-base | embedding checkpoint |
+| reid.yaml: device | cpu | pytorch embedding device |
+| reid.yaml: acceptance_threshold | 0.55 | final weighted score threshold, or dino-only fallback; provisional, not a probability |
+| reid.yaml: margin_threshold | 0.15 | minimum best-minus-runner-up final score; provisional |
+| reid.yaml: match_log_path | logs/reid_match_log.csv | optional diagnostic csv; omit to disable; relative paths follow working directory |
+| reid.yaml: top_k | 3 | number of strongest references averaged, capped by available references |
+| reid.yaml: prototype_shortlist_size | 3 | ranked prototype candidates; missing prototypes are retained additionally |
+
+small galleries bypass prototype ranking; a nonpositive shortlist setting also bypasses it. keep top_k positive. library configuration parsing does not provide comprehensive validation of every setting.
+
+## preparation and scheduling: scene_processor.yaml
+
+| key | current value | interpretation |
+| --- | --- | --- |
+| background_color | [0, 0, 0] | rgb background replacement |
+| min_mask_pixels | 100 | minimum retained mask pixels inside the crop |
+| reference_target_count | 6 | maximum accepted references per item/model via guarded worker saves |
+| capture_interval_seconds | 2.0 | nominal spacing after successful capture result application |
+| job_queue_max_size | 8 | waiting-job capacity, excluding the executing job; keep positive |
+| bad_mask_cooldown_seconds | 5.0 | resolve retry delay after bad views, errors, or claimed-item conflicts |
+| queue_full_retry_seconds | 0.5 | resolve retry delay after full queue |
+| min_box_area | 400 | resolve prefilter minimum box area in square pixels |
+| min_detector_confidence | 0.0 | additional resolve filter; detector still uses 0.18 |
+| edge_margin_pixels | 2 | resolve candidates touching this frame-edge margin are rejected |
+
+these filters and cooldowns are not universal capture guarantees. the additional-reference path does not apply the same prefilter or all the same retry cooldowns. it can continue performing preparation after the database reference cap has been reached; the store rejects extra saves. see [performance caveats](07-performance.md).
+
+sources: [camera settings](../configs/camera.yaml), [perception settings](../configs/perception.yaml), [database settings](../configs/table.yaml), [sam2 settings](../configs/segmenter.yaml), [reid settings](../configs/reid.yaml), [scene settings](../configs/scene_processor.yaml).
+
+reid weights (0.65 dino, 0.20 color, 0.15 aspect) are constants in memory/reid.py, not yaml options. the older 0.4 threshold applied to dino-only scoring and is historical; the current 0.55/0.15 settings need empirical calibration for the weighted score and descriptor-missing fallback. the 960 detector input requests more inference pixels than 640; no measured throughput effect is claimed.
+"><span class="number">Chapter 06</span><h2><a href="06-configuration.html">Configuration reference</a></h2><p>All six YAML files: camera settings, thresholds, lifecycle timing, and worker scheduling.</p><a class="source" href="06-configuration.md">Markdown source</a></article><article class="card" data-search="performance specifications and evidence # performance specifications and evidence
+
+## what is specified
+
+the project has timing and resource-control settings, but no published measured throughput, accuracy sla, maximum gallery size, or minimum hardware specification. the benchmark script is empty. do not interpret a 30 fps camera setting as 30 fps end-to-end processing.
+
+| property | configured or derived value | evidence category |
+| --- | --- | --- |
+| capture request | 1280 x 720 at 30 fps | configuration; actual negotiation unverified |
+| detector image-size argument | 960 | configuration |
+| candidate confirmation | 2 seconds | configured temporal gate, not total identification latency |
+| removal threshold | 2 seconds absent | evaluated when the loop runs, not a hard deadline |
+| movement stop confirmation | 1 second within 5 pixels | configured image-space heuristic |
+| background concurrency | one worker | source implementation |
+| waiting jobs | up to 8 with current setting | source/config; executing job is additional |
+| result queue | unbounded | source implementation |
+| accepted reference target | 6 per item/model | guarded database-save cap |
+| display fps, p95 latency, memory peak, recognition accuracy | not measured here | requires benchmark/evaluation |
+
+## useful estimates, not benchmarks
+
+a 1280 x 720 three-channel uint8 frame contains 2,764,800 bytes, about 2.64 mib. eight queued full-frame copies account for about 21.1 mib of raw frame storage. this excludes the active frame/job, object overhead, result crops, masks, model tensors, and inference workspaces; it is not a process-memory bound.
+
+an identity outcome requires at least the confirmation gate plus queue wait, inference, and result application. failed-view retries add cooldowns. six successful references require an initial view and five additional spaced saves; five two-second gaps contribute roughly ten seconds before processing/queue delays. neither is a guaranteed completion time.
+
+prototype shortlisting still compares against gallery prototypes and sorts ranked items. it reduces detailed reference comparisons for ranked items, but is not a vector index or constant-time lookup. entries without prototypes remain eligible beyond the nominal shortlist size.
+
+## current implementation caveats
+
+- sam2 and dinov2 are moved off the frame loop, but main-thread detection and lifecycle database writes can still stall display.
+- with a nonempty gallery, sceneprocessor prepares an embedding, then match_candidate embeds the same prepared crop again. identity resolution can therefore perform two dinov2 passes.
+- the reference target caps saves, not inference. the worker prepares a crop before checking the store cap, and the coordinator does not stop scheduling on a skipped result.
+- bad additional-reference captures and full capture queues do not receive all resolve-path cooldown protections. repeated capture work remains a possible load source.
+- the initial gallery load is outside per-job error handling. a schema failure can leave the identification worker unavailable.
+- full-frame copies and cpu model workloads share memory/compute with capture and detection.
+- diagnostic prints remain in hot paths; centralized logging is unfinished.
+- task notes identify high frame dropout as unresolved pending a post-async hardware check.
+
+these observations are source-based limitations, not measurements or fixes made by this documentation task.
+
+## proposed benchmark protocol
+
+use an isolated database and record the code revision, exact package versions, cpu/ram, power mode, camera/backend, negotiated resolution/rate, model assets, and all yaml settings. separate cold startup/download/export from a warmed steady-state run.
+
+measure frame read, detector/tracker, coordinator, and display duration; worker queue wait and processing duration; end-to-end identity latency; delivered fps; failed reads; cpu usage; peak resident memory; and queue occupancy. report median and p95 values plus sample counts and run duration, not only averages.
+
+exercise an empty scene, several stable objects, repeated additions/removals, movement before identity completes, clipped/bad masks, similar-looking objects, and growing galleries. repeat fixed scenarios under consistent lighting. for identity quality, label same-item versus different-item trials and report false matches, missed matches, and duplicate permanent identities. tune the threshold on calibration examples and evaluate separately held-out examples.
+
+acceptance thresholds for throughput and accuracy remain to be agreed for the intended workload. this protocol is proposed; no benchmark execution is claimed.
+
+sources: [benchmark placeholder](../scripts/benchmark_local.py), [worker](../src/project_auto/events/identification_worker.py), [coordinator](../src/project_auto/events/coordinator.py), [scene processor](../src/project_auto/perception/scene_processor.py), [reid matcher](../src/project_auto/memory/reid.py).
+
+## spatial and inference changes
+
+region resolution scans configured polygons when committing event evidence or making explicit queries. polygon areas are stored once at creation. ordinary frames do not write region/current-box state. translucent drawing runs during calibration or temporary query highlights, and terminal prompts block capture until input completes; this stopgap ui is unsuitable for uninterrupted acquisition guarantees.
+
+yolo confidence is now 0.18 and imgsz is 960; these are configured changes, not measured quality or performance improvements. reid now computes supplementary histogram/aspect scores and can append csv diagnostics. include these settings, region count/vertex count, and query pauses when benchmarking.
+"><span class="number">Chapter 07</span><h2><a href="07-performance.html">Performance specifications and evidence</a></h2><p>Configured limits, derived estimates, implementation caveats, and a proposed benchmark protocol.</p><a class="source" href="07-performance.md">Markdown source</a></article><article class="card" data-search="scope, assumptions, and limitations # scope, assumptions, and limitations
+
+## current scope
+
+the implemented product is a local, single-camera tabletop perception and event-memory prototype. it captures images, detects and tracks objects, proposes permanent identities from appearance, records addition/movement/removal/return events, and supports polygon calibration, console spatial queries, and temporary region highlights. it retains history across process restarts through sqlite; temporary tracker bindings are session-local.
+
+## assumption register
+
+| id | assumption | consequence if false |
+| --- | --- | --- |
+| a01 | camera is fixed and actual capture resolution remains stable | stored polygons and pixel placement buffers no longer describe equivalent locations; recalibrate |
+| a02 | objects receive usable yolo detections and track ids | untracked or undetected objects do not enter the lifecycle |
+| a03 | appearance and lighting yield useful masks/embeddings | identity may defer, split into duplicate items, or falsely match |
+| a04 | model and preprocessing are compatible across saved references | similarity and prototypes may be invalid after model/preprocessing changes |
+| a05 | local devices, model files/cache, desktop, and disk are available | startup or capture can fail; offline startup may lack weights |
+| a06 | workload fits one cpu worker and local sqlite | queue deferral, latency, and frame competition can increase |
+| a07 | existing database schema matches the current models | create_all cannot repair old columns; gallery load or event writes may fail |
+| a08 | camera indexes are configured for the actual machine | wrong device may open, or fallback may fail |
+| a09 | a local trusted-user workflow is sufficient | files and camera data have no application-level access-control layer |
+
+these are operating assumptions, not validated guarantees for every deployment.
+
+## known limitations and follow-up work
+
+| limitation | impact | follow-up direction |
+| --- | --- | --- |
+| reid threshold is provisional | recognition quality at decision margins is unknown | empirical same/different-item calibration and held-out evaluation |
+| movement before identity is dropped | event history can omit an early movement | define buffering/reconciliation policy |
+| delayed results have no track generation token | numeric id reuse can defeat active-id checks | add generation-aware correlation and tests |
+| initial identity and first reference are separate transactions/jobs | newly created items may briefly lack matchable references | review consistency and failure recovery |
+| capture scheduling continues beyond save cap | avoidable inference load | stop scheduling at target and apply capture cooldowns |
+| occlusion lifecycle is incomplete | long occlusion can look like removal | define visibility/occlusion policy |
+| migration system is absent | older databases require deliberate migration | version schema and preserve existing history |
+| debug display/logging only | limited operational observability | structured logging and lifecycle/identity display |
+| no complete measured benchmark | capacity and latency cannot be promised | implement the performance protocol |
+
+## out of scope for the current implementation
+
+- natural-language questions, voice interaction, a full graphical object-search ui, or a public api; temporary w/r console queries are implemented.
+- calibrated 3d positions, depth sensing, homography, robotic manipulation, region hierarchies or geometry versioning; 2d semantic polygons are implemented.
+- multi-camera fusion, cross-device synchronization, cloud-hosted inference, or multi-user service operation.
+- training or fine-tuning yolo/sam2/dinov2 within the live application.
+- guaranteed identification of visually identical objects or unrestricted object classes.
+- production slas, automated schema upgrades, deployment packaging, and comprehensive monitoring.
+- automatic evidence video recording or a complete evidence retention/export workflow.
+
+these boundaries describe current code, not permanent exclusions from the roadmap. the html documentation portal provides navigation to project information; it does not implement authentication, remote hosting, or the application&#x27;s console object-query interface.
+
+## priority order suggested by current evidence
+
+stabilize schema compatibility and worker failure visibility; measure post-async performance; calibrate recognition; tighten capture scheduling and stale-result handling; validate live polygon calibration and spatial event/query behavior against the implemented memory layer. the task history remains the owner&#x27;s working backlog, rather than a commitment to release dates.
+
+sources: [task history](../src/project_auto/tasks.md), [coordinator](../src/project_auto/events/coordinator.py), [worker](../src/project_auto/events/identification_worker.py), [region geometry](../src/project_auto/memory/regions.py).
+
+additional spatial limits: current_box is the latest meaningful-event snapshot, not a live trajectory. an already-present reid association makes no event or location write; early moved signals can be dropped while identity is unresolved. calibration is not automatically offered on startup. polygon editing/versioning, materialized region statistics, and automatic schema upgrades are deliberately deferred.
+"><span class="number">Chapter 08</span><h2><a href="08-scope.html">Scope, assumptions, and limitations</a></h2><p>Operating assumptions, known gaps, current exclusions, and follow-up priorities.</p><a class="source" href="08-scope.md">Markdown source</a></article><article class="card" data-search="setup and operations # setup and operations
+
+## prepare an editable checkout
+
+use a python interpreter within the declared &gt;=3.10,&lt;3.14 range. from the project root in powershell:
+
+```powershell
+python -m venv .venv
+.\.venv\scripts\activate.ps1
+python -m pip install -e &quot;.[reid]&quot;
+python -m pip install pytest
+```
+
+the reid extra is needed for the current full live app. installation commands are instructions; dependencies were not installed or changed during documentation generation. if environment activation is restricted, invoke the virtual environment&#x27;s python executable directly rather than changing system execution policy.
+
+## preflight
+
+1. check camera indexes and desired capture properties in camera.yaml.
+2. check cpu/model paths in perception.yaml, segmenter.yaml, and reid.yaml.
+3. ensure initial model acquisition/export can complete, or that the required assets are already cached for offline use.
+4. confirm the configured database schema is current. back up an existing database with the app stopped before any schema changes. there is no automatic migration command. the inspected-schema sql described below must be reviewed before deliberate use.
+5. for an isolated demonstration, choose a new unused database path in table.yaml; this preserves the existing history and allows create_schema to create fresh tables. restore the intended configuration after the demonstration.
+6. use an interactive desktop and keep the monitored scene/camera stable.
+
+do not replace or delete the user&#x27;s existing database as a setup shortcut. fresh database creation and upgrading an existing schema are different operations.
+
+## run and stop
+
+```powershell
+project-auto
+```
+
+equivalent module invocation after installation:
+
+```powershell
+python -m project_auto.main
+```
+
+the camera window displays detection annotations. press q with that window focused to quit. press w for item whereabouts or r for region inspection, then answer the prompt in the terminal; matching polygons are highlighted temporarily. first startup can take substantially longer while models load or export; no startup time guarantee is established. the window does not yet expose complete identity/lifecycle state.
+
+## troubleshooting
+
+| symptom | likely area | first check |
+| --- | --- | --- |
+| missing torch, transformers, pil, or sam2 import | environment/dependency compatibility | use the active virtual environment and install the reid extra; verify the installed transformers exposes the required sam2 classes |
+| camera will not open / wrong view | device mapping or other camera user | check indexes, os camera availability, and whether another app holds the device |
+| startup fails on download/model load | model cache/network/path | verify configured files and cached model access; export directory existence alone does not establish integrity |
+| missing-column error or identification stops resolving | old schema / worker startup failure | inspect schema against models.py and worker logs before migration |
+| repeated pending decisions | bad crop/mask, edge clipping | inspect scene quality and diagnostic rejection reasons; retain true foreground mask polarity |
+| same item repeatedly becomes new | reference availability or similarity quality | check successful reference saves, matching model/preprocessing, and same/different-item score distributions |
+| slow display / many deferred jobs | main-thread inference or worker pressure | measure stage timings and queue behavior using the performance chapter |
+| moved absent for a newly seen object | identity still unresolved | current coordinator drops movement before binding an item |
+| shutdown takes longer than five seconds | queued/in-progress worker work | shutdown has a blocking sentinel enqueue; timeout is not a total bound |
+
+## data and model maintenance
+
+back up the sqlite database while the application is stopped, together with any externally managed evidence files and a copy of configuration/model provenance. the live code does not provide automated backups or retention. model artifacts are generated/downloaded files; do not edit their binary contents. changing a model or preprocessing requires checking reference compatibility and recalibrating recognition.
+
+the repository&#x27;s research examples are separate from the live database gallery. notebook reference images and saved `.pt` files are not automatically imported into production memory by app.py.
+
+## documentation portal
+
+open [index.html](index.html) directly in a browser. chapter pages render fully offline without a server, third-party scripts, or external fonts. search on the home page filters chapters by their full text; navigation and content remain usable with javascript disabled. each page offers its markdown source and browser print support.
+
+edit the numbered markdown chapters, then rebuild generated pages from the repository root:
+
+```powershell
+python docs/build_docs.py
+python docs/check_docs.py
+```
+
+sources: [application](../src/project_auto/app.py), [camera](../src/project_auto/capture/camera.py), [models guide](../models/readme.md), [configuration](06-configuration.md).
+
+## define regions before tracking
+
+run python -m project_auto.region_calibration from the activated editable checkout. click polygon vertices, use u to undo, enter/c to close, and enter a unique name in the terminal. q exits calibration. the application reuses camera/cameraconfig; calibration is a separate launch and does not run detector/identity inference. complete controls, source-path invocation, and query semantics are in [regions and spatial memory](11-regions.md).
+
+## missing-column startup incident and recovery
+
+on 14 september, the identification worker failed during initial gallery loading with sqlite3.operationalerror: no such column: item_embeddings.aspect_ratio. inspection found eight absent nullable columns: embedding aspect_ratio/color_histogram, item current_region_id/current_box, and event source_region_id/destination_region_id/source_box_area_fraction/destination_box_area_fraction. the regions table already existed. the earlier model-download warnings were not the exception shown in this traceback.
+
+[manual_schema_update.sql](manual_schema_update.sql) adds exactly these columns and three region-fk indexes in one transaction, retaining set null deletion behavior. it is a one-time sql artifact for that inspected schema, not a versioned migration framework or an idempotent startup routine. do not run it on a fresh/already-updated database. confirm the current schema and take a sqlite backup with the application stopped before explicitly applying it.
+
+a test on a disposable copy preserved all original values across 9 items, 49 embeddings and 36 events, passed sqlite integrity/fk checks, and loaded the gallery and item/event/region queries. the first test subsequently failed temporary-directory cleanup because a sqlite handle remained open. revalidation found the live file absent; no migration was applied to the live database by this work. a database file is present again at the documentation review, but its origin, retained history, and schema have not been reverified. confirm reset/recovery intent before any schema action; do not infer continuity from file existence.
+
+if a database was deliberately reset, normal startup creates fresh tables when the configured file is absent, but previous item history is not restored. if history is required, recovery from the intended backup takes priority. initial worker gallery loading remains outside per-job exception handling, so schema failures still require startup diagnostics rather than ordinary per-track retries.
+"><span class="number">Chapter 09</span><h2><a href="09-operations.html">Setup and operations</a></h2><p>Installation, model preparation, database preflight, running, stopping, and troubleshooting.</p><a class="source" href="09-operations.md">Markdown source</a></article><article class="card" data-search="verification and documentation maintenance # verification and documentation maintenance
+
+## verification boundaries
+
+this documentation reflects source/yaml review on 14 september 2026. the earlier region implementation run in this chat passed 160 tests (130 existing tests plus 30 geometry, spatial memory and ui checks). that is recorded implementation evidence, not a fresh test execution during this documentation-only refresh or a guarantee of live hardware behavior.
+
+the working tree contains uncommitted application/configuration and documentation changes. weighted descriptor scoring and region integration are present in the inspected source; no held-out recognition calibration or throughput measurement is claimed. geometry and gui interaction tests use isolated databases and simulated camera/input. ruff was unavailable during implementation. the earlier manual schema validation passed data and query checks on a copy, then encountered temporary-file cleanup trouble; no live database migration is claimed. recovery/reset provenance is still to confirm.
+
+the documentation build/link checks validate navigation, anchors, and generated chapter coverage without importing application models or opening its database. the existing portal visual style is retained; no new browser-based visual qa is claimed by this refresh.
+
+## existing automated coverage
+
+| test file | focus |
+| --- | --- |
+| [test_camera.py](../tests/test_camera.py) | camera fallback and capture setup behavior |
+| [test_detector.py](../tests/test_detector.py) | ultralytics tracking calls and detection conversion |
+| [test_tracker.py](../tests/test_tracker.py) | temporal confirmation, missing tracks, movement, invalid settings |
+| [test_state_machine.py](../tests/test_state_machine.py) | lifecycle decisions and permanent identity requirements |
+| [test_event_engine.py](../tests/test_event_engine.py) | event dispatch, bindings, return/removal behavior |
+| [test_memory_database.py](../tests/test_memory_database.py) | schema and persistent-memory behavior |
+| [test_reid.py](../tests/test_reid.py) | synthetic embedding matching and prototype shortlist behavior |
+| [test_scene_processor.py](../tests/test_scene_processor.py) | crop/mask preparation and identity proposals |
+| [test_identification.py](../tests/test_identification.py) | referencemanager queue/cooldown state |
+| [test_identification_worker.py](../tests/test_identification_worker.py) | worker jobs, results, queue behavior, shutdown |
+| [test_coordinator.py](../tests/test_coordinator.py) | async submission, result application, retirement and binding scenarios |
+| [test_regions.py](../tests/test_regions.py) | shoelace area, concave/edge inclusion, centroid overlap resolution, validation and normalized areas |
+| [test_region_memory.py](../tests/test_region_memory.py) | add/moved/removed/returned spatial persistence, rollback, deletion/snapshots, fallback, query semantics and no query writes |
+| [test_region_ui.py](../tests/test_region_ui.py) | drawing copies/blending, terminal queries, simulated polygon clicks/undo/save |
+
+tests using synthetic embeddings and fake workers verify logic, not real-world recognition accuracy, camera throughput, or all thread interleavings. presence of a test file does not certify complete coverage of its subsystem.
+
+run the suite in a prepared environment:
+
+```powershell
+python -m pytest -q
+```
+
+for persistence-focused work:
+
+```powershell
+python -m pytest -q tests/test_memory_database.py tests/test_event_engine.py
+```
+
+## hardware validation still needed
+
+use an isolated database and record the hardware/configuration. calibrate overlapping polygons, verify smallest-region selection and w/r highlights, and check removal clears current contents while history survives. demonstrate addition, movement, removal, and return of the same physical item under a new track id; ensure a different item does not falsely claim it. exercise occlusion, bad views, queue pressure, retirement during inference, and application shutdown. measure performance separately from correctness and retain labeled evidence for calibration.
+
+## documentation structure and ownership
+
+the numbered markdown files are the maintained content source. `build_docs.py` generates the html home page, chapter pages, shared css, and home-page search behavior using python&#x27;s standard library. generated files are committed for immediate offline access. `check_docs.py` checks local html links, fragments, titles, and generated-page coverage without importing project models or opening its database.
+
+| change type | chapters to review |
+| --- | --- |
+| product capability or scope | overview, scope, operations |
+| threading, event routing, module responsibilities | architecture, modules, data, performance |
+| models or package versions | stack, configuration, operations, performance |
+| yaml defaults | configuration and affected performance statements |
+| database schema or event semantics | data, operations, verification |
+| new benchmark or hardware run | performance and verification, with date and reproducible conditions |
+
+update the review date after a substantive source review. cite the relevant source file near behavioral claims. mark each result as configured, derived, historically reported, newly measured, or pending. never convert a camera fps request, a similarity threshold, or a test count into an accuracy or performance guarantee.
+
+## maintenance boundaries
+
+the root readme and project_context now summarize the integrated async and spatial architecture. tasks separates current priorities from historical milestones; historical thresholds/pass counts are not current configuration. agents retains the working agreement and points to the updated architecture and remaining verification work.
+
+keep source-level limits explicit: lifecycle writes still run on the main thread, reference save limits do not stop every inference request, resolve and capture retry behavior differ, and margin rejection currently becomes new through sceneprocessor. the region layer does not add per-frame db observations or move sql into geometry/tracking. review [chapter 11](11-regions.md) with any change to these contracts.
+"><span class="number">Chapter 10</span><h2><a href="10-verification.html">Verification and documentation maintenance</a></h2><p>Test coverage boundaries, hardware validation, source precedence, and documentation upkeep.</p><a class="source" href="10-verification.md">Markdown source</a></article><article class="card" data-search="region identification and spatial memory # region identification and spatial memory
+
+## purpose and coordinate contract
+
+the fixed camera frame is the spatial coordinate system. regions are manually calibrated simple polygons with integer [x, y] vertices, stored in sqlite. concave polygons are supported. no depth, homography, world coordinates, region hierarchy, or geometry versioning is implemented. moving the camera or changing its actual capture resolution requires recalibration; changing yolo&#x27;s inference image size alone does not redefine frame coordinates.
+
+the pure [geometry module](../src/project_auto/memory/regions.py) validates at least three distinct vertices, nonzero area, and nonintersecting edges. it accepts a repeated closing vertex and normalizes it away. shoelace area is computed at creation and stored as area_px. ray casting includes edges and vertices as inside. resolution uses the bbox centroid, selects the containing region with the smallest stored area, and breaks equal-area ties by lowest id. no match returns none.
+
+## event-to-state flow
+
+```text
+tracksignal / identity-resolved detection
+  -&gt; eventengine chooses meaningful lifecycle operation and supplies boxes
+  -&gt; databasestore opens the existing item/event transaction
+  -&gt; load region rows -&gt; pure resolve_region(box, regions) -&gt; selected id
+  -&gt; event region fks + name snapshots + box evidence + normalized areas
+  -&gt; item current_box/current_region_id and relevant timestamps/status
+  -&gt; one commit; track binding changes only after successful persistence
+```
+
+the coordinator supplies actual (frame width, frame height) to eventengine in memory. resolution and item updates occur in databasestore, not in tracker callbacks or a second app-level write. region rows are loaded when resolving event evidence or explicit queries; there is no per-frame region persistence.
+
+| event | persisted spatial evidence | live item state |
+| --- | --- | --- |
+| added | destination box, region id/name, area fraction | destination current_box/current_region_id |
+| moved | both boxes, both region ids/names, both area fractions | destination current_box/current_region_id |
+| removed | source box, region id/name, area fraction | both live fields cleared |
+| returned | destination box, region id/name, area fraction | destination current_box/current_region_id |
+
+for removal, eventengine supplies the signal&#x27;s last detection box. direct mark_removed calls without a box fall back to the item&#x27;s stored current_box. source membership is resolved against configured geometry at event time. add/moved/returned update last_seen_at within the same transaction; removal keeps its existing timestamp semantics and clears spatial belief. box snapshots are event evidence, not a trajectory history.
+
+each normalized fraction is max(0, x2-x1) * max(0, y2-y1) / (frame_width * frame_height). fractions remain null when frame dimensions or that side&#x27;s box are unavailable. separate fields avoid ambiguity for moved. these fractions are not metric object size and are distinct from the reid aspect-ratio descriptor.
+
+the low-level record_event method appends historical evidence and resolves its boxes, but retains its existing behavior of not changing live item state/status. use lifecycle store operations for live transitions. association with an already-present item creates no event and therefore performs no spatial write.
+
+## relational meaning and deletion
+
+region.id is canonical. item.current_region_id means the system currently believes the item occupies that region; removed items have no current region. event source_region_id/destination_region_id support activity and historical association queries. event source_region/destination_region are human-readable snapshots that do not change if the region is renamed.
+
+all three region fks use on delete set null. deleting a region retains items, events, boxes, and historical names. item deletion retains the preexisting cascade to its own events and embeddings. region aggregates such as last_activity_at and item_count are derived by queries, not duplicated on region rows. there is no rename/redraw ui or polygon-version history in this implementation.
+
+## store api reference
+
+| api | result and semantics |
+| --- | --- |
+| create_region(name, polygon) | validates a nonempty unique name and polygon, computes area, commits a region |
+| get_region(region_id), get_region_by_name(name), list_regions() | region lookup; list in id order |
+| delete_region(region_id) | boolean indicating deletion; preserves historical evidence |
+| resolve_box_region(box) | matching region or none; read-only |
+| find_items(name) | exact display/class-name matches, including removed items |
+| get_item_current_region(item_id) | current region with conservative legacy fallback |
+| get_items_in_region(region_id) | current fk plus present/occluded status; no historical inference |
+| get_region_recent_events(region_id, limit=20) | either event region fk matches; descending occurred_at then id; negative limit rejected |
+| get_region_last_activity(region_id) | newest event or none, not a stored timestamp aggregate |
+| get_items_associated_with_region(region_id) | distinct items linked by source/destination event ids, regardless of current presence |
+| get_item_history(item_id) | existing chronological history, now including spatial evidence |
+
+current-location fallback only applies to present/occluded items with neither live location field. it examines the newest added/moved/removed/returned event and uses its destination fk if valid. it never skips a removal or unassigned destination to revive an older location. names alone are not converted into relational associations. a current_box outside every polygon explicitly means an unassigned region, not an invitation to use historical location.
+
+## calibration and query workflow
+
+from an activated editable checkout, launch calibration separately from normal tracking:
+
+```powershell
+python -m project_auto.region_calibration
+```
+
+without an editable install, set the source path first:
+
+```powershell
+$env:pythonpath = (resolve-path .\src).path
+python scripts/define_regions.py
+```
+
+the thin script delegates to run_calibration, which reuses camera/cameraconfig and databasestore with camera.yaml/table.yaml. saved polygons have translucent fills, outlines, and names; the active polygon shows vertices and edges. a valid closed polygon is previewed before naming.
+
+| control | calibration behavior |
+| --- | --- |
+| left click | append a vertex |
+| u | undo the latest vertex |
+| enter or c | validate and close; freeze vertex input while prompting for a name in the terminal |
+| blank name | cancel saving, retaining vertices for editing |
+| q | exit the camera window loop |
+
+successful saves clear the active polygon and continue calibration. invalid geometry or duplicate names leave it editable. this is a separate launch mode, not automatic startup calibration and not an in-window text-entry gui. calibration does not start yolo, sam2, or dinov2 model inference.
+
+during normal project-auto tracking, w prompts for item id/exact name; r prompts for region name and prints contents, recent activity, last activity, and associated items. ambiguous item names print all matches with ids. query results highlight regions for table.yaml&#x27;s regions.highlight_frames (150 by default). queries and highlights remain in memory/read-only; console input pauses the main capture loop.
+
+## verification and remaining work
+
+the 14 september implementation run passed 160 tests. geometry, lifecycle spatial persistence, rollback, deletion/name preservation, read-only queries, fallback, drawing, and simulated calibration controls have automated coverage. physical-camera polygon calibration and the complete live region lifecycle are not yet verified in this session. no recognition-accuracy or throughput improvement is established by these tests.
+
+existing sqlite tables require deliberate schema migration; the [manual sql](manual_schema_update.sql) is a one-time update for a specifically inspected old schema, not a general migration command. reinspect the intended database before applying it. see [operations](09-operations.md) and [verification](10-verification.md) for the startup incident and validation limits.
+
+sources: [geometry](../src/project_auto/memory/regions.py), [models](../src/project_auto/memory/models.py), [store](../src/project_auto/memory/store.py), [event engine](../src/project_auto/events/event_engine.py), [calibration](../src/project_auto/region_calibration.py), [console queries](../src/project_auto/region_queries.py), [drawing](../src/project_auto/utils/drawing.py).
+"><span class="number">Chapter 11</span><h2><a href="11-regions.html">Region identification and spatial memory</a></h2><p>Polygon calibration, event-based location state, region queries, and spatial contracts.</p><a class="source" href="11-regions.md">Markdown source</a></article></div><p id="empty" hidden>No chapters match. Try a shorter term such as “model” or “event”.</p></section><footer>Project AUTO · Source-grounded documentation · Offline HTML edition<br>Configured values are not measured guarantees. Source chapters are maintained in Markdown.</footer></main></div></body></html>

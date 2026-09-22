@@ -105,6 +105,7 @@ class IdentityCoordinator:
         """
         now = self.clock()
         assert self.worker is not None
+        self.event_engine.frame_size = (frame.shape[1], frame.shape[0])
         self._apply_results(self.worker.poll_results())
 
         for signal in signals:

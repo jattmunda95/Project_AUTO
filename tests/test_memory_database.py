@@ -41,7 +41,9 @@ def store(engine: Engine) -> DatabaseStore:
 def test_schema_creates_required_tables_and_composite_index(engine: Engine) -> None:
     database_inspector = inspect(engine)
 
-    assert set(database_inspector.get_table_names()) == {"items", "item_events", "item_embeddings"}
+    assert set(database_inspector.get_table_names()) == {
+        "items", "item_events", "item_embeddings", "regions"
+    }
     event_indexes = {index["name"] for index in database_inspector.get_indexes("item_events")}
     assert "ix_item_events_item_id_occurred_at" in event_indexes
 

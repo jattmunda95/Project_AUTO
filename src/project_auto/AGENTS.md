@@ -21,8 +21,11 @@ The detector invokes Ultralytics BoT-SORT and exposes optional temporary track I
 application passes detections through the tracker, state machine, event engine, and SQLite
 store. The verified lifecycle supports time-confirmed `ADD`, stable-placement `MOVED`, and
 `REMOVE` after a stable or moving track has been absent for two seconds. Track-to-item
-bindings are provisional session mappings, not permanent identity recognition. Do not
-describe reliable re-identification as implemented.
+bindings are provisional session mappings owned by `EventEngine`, not permanent identity
+recognition by themselves — permanent identity comes from ReID (SAM2 + DINOv2 + gallery
+matching), which now runs and has been verified against real hardware: items are correctly
+added, re-identified on reappearance, and returned. Match quality at the threshold margins is
+still uncalibrated (see `TASKS.md`); do not describe it as tuned or production-accurate.
 
 ## Target hardware
 
@@ -30,9 +33,8 @@ describe reliable re-identification as implemented.
 - Intel integrated graphics (CPU inference for SAM2/DINOv2; no GPU acceleration configured yet)
 - OpenVINO-optimized detector inference
 - Camera: prefers an external USB camera, falls back to the built-in/inbuilt webcam if it is
-  not connected (`capture/camera.py`, `configs/camera.yaml`: `usb_device`, `webcam_device`).
-  Known issue: currently falls back to the built-in camera even when the USB webcam is
-  connected; the assumed USB device index has not been confirmed on this machine.
+  not connected (`capture/camera.py`, `configs/camera.yaml`: `usb_device: 0`,
+  `webcam_device: 1`, confirmed correct for this machine).
 - Entirely local operation for the MVP
 
 ## Engineering conventions
@@ -78,24 +80,49 @@ After modifying code:
 
 ## Current priority
 
-Follow the `Current task` section in `TASKS.md`. Scene processing and live identity
-integration are now wired end to end through `IdentityCoordinator`
-(`events/coordinator.py`) and `app.py`, but unverified against real hardware: no live
-camera/model run has succeeded yet. Standalone ReID, SAM2 segmentation, two-stage
-prototype-then-reference matching, and prototype calculation exist; reliable identity
-recognition is not verified against real images.
+Follow the `Current task` section in `TASKS.md`. ReID is now verified working end to end on
+real hardware: items are added, correctly re-identified when they reappear (including under
+a brand-new track ID), and returned items are persisted as RETURNED. Getting here required
+fixing three real bugs, not just calibration — see `TASKS.md`'s "real-hardware ReID debugging
+session" entry for the full account:
+1. `configs/camera.yaml` had `usb_device`/`webcam_device` swapped.
+2. `perception/segmenter.py` inverted SAM2's mask, discarding the object and keeping the
+   background before DINOv2 ever saw it. **The SAM keep-mask is not inverted anymore** —
+   `keep_mask = candidates[best]` matches `Sam2Processor`'s own True-means-object convention.
+   Do not reintroduce an inversion here without strong evidence; it silently destroys ReID
+   signal while still looking like it runs successfully.
+3. `EventEngine.process_remove` used to leave a track's `_item_ids_by_track_id` binding in
+   place forever after removal, permanently (not just temporarily) blocking
+   `is_item_claimed()` from ever releasing that item for a future RETURNED/associate
+   resolution on a new track. It now deletes the binding on removal.
 
-Immediate blockers before a usable live run:
-- Camera device selection defaults to the built-in webcam even when a USB camera is
-  connected; the assumed `usb_device` index in `configs/camera.yaml` needs confirming.
-- Live frame rate after the new `pending_retry_interval_seconds` throttle is unconfirmed;
-  SAM2/DINOv2 run synchronously on CPU inside the capture loop.
+Identification is asynchronous: `IdentityCoordinator` (`events/coordinator.py`) submits a
+lightweight `IdentificationJob` and returns immediately; `IdentificationWorker`
+(`events/identification_worker.py`) runs SAM2 + DINOv2 + gallery matching + persistence on
+one background thread and reports back through a non-blocking result queue.
+`ReferenceManager` (`events/identification.py`) guarantees at most one outstanding job per
+track and replaces per-frame retrying with an explicit cooldown/state machine
+(`bad_mask_cooldown_seconds`, `queue_full_retry_seconds`) — never reintroduce a synchronous
+SAM/DINO call inside the main capture loop, or a resubmit-every-frame retry on a bad mask;
+both were real production bugs here, not hypothetical ones. Never call scene processing, SAM,
+ReID, or the database from the tracker itself. The event layer distinguishes new identities
+(ADD), matched removed items (RETURNED), and already-present associations (no event). See
+`TASKS.md` for current schema recovery, hardware region verification, weighted-score calibration,
+performance measurement and logging priorities. `PROJECT_CONTEXT.md` now describes the current
+async and spatial architecture; the detailed reference is `docs/11-regions.md`.
 
-The app/coordinator requests stage-blind scene processing after tracker confirmation and
-before permanent-item creation. Never call scene processing, SAM, ReID, or the database from
-the tracker. Pending retries for unusable observations are preserved but now throttled by
-time, not retried every frame. The event layer distinguishes new identities (ADD), matched
-removed items (RETURNED), and already-present associations (no event). Preserve the user's
-inverted SAM keep-mask. See PROJECT_CONTEXT.md for reference collection and gallery
-ownership. Migrate the embedding and prototype schema before live use; create_all() does not
-alter existing tables.
+## Region-memory boundaries
+
+Region geometry is pure pixel-space logic in `memory/regions.py`; keep SQL/session access in
+DatabaseStore. EventEngine supplies meaningful event boxes; the store resolves polygons and
+commits event IDs/name snapshots plus Item.current_box/current_region_id atomically. Removed
+items have neither live field. Do not introduce per-frame location writes, tracker database
+access, region event cascades, or name-based canonical associations. Region FKs use SET NULL;
+event names remain historical snapshots.
+
+Calibration runs separately through `project_auto.region_calibration` and reuses Camera.
+Normal tracking uses w/r console queries and temporary in-memory highlights. The 160-test
+implementation run includes simulated region UI and persistence checks, not physical-camera
+verification. Current ReID 0.55 acceptance/0.15 margin and YOLO 0.18 confidence/960 image size
+are configured values, not calibrated performance guarantees. Existing databases require
+explicit inspection/migration; never silently delete, recreate or auto-migrate them.

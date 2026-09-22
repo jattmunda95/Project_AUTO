@@ -1,11 +1,18 @@
 model_name: facebook/dinov2-base
 device: cpu
-# DINOv2's raw CLS-token cosine similarity runs much lower than a "how similar
-# does this look" intuition suggests; 0.75 was unreachable in practice (observed
-# best-match scores around 0.07), so every detection fell through to NEW every
-# time. Retune this against your own printed [ReID] match_candidate scores:
-# watch several same-item re-detections vs different-item detections and pick a
-# threshold between the two clusters, with margin.
-acceptance_threshold: 0.4
+# The final match score is now a weighted sum (0.65 DINO + 0.2 color + 0.15
+# aspect ratio), not raw DINO cosine similarity alone; color/aspect similarity
+# run much higher than DINO's ~0.07 same-item scores observed pre-weighting, so
+# 0.55 is a starting estimate, not an empirically tuned value. Retune against
+# match_log_path's logged scores: watch several same-item re-detections vs
+# different-item detections and pick a threshold between the two clusters.
+acceptance_threshold: 0.55
+# The best-scoring item must beat the runner-up by at least this much to be
+# accepted, guarding against accepting a weak winner when two items score
+# nearly the same. Also an unvalidated starting estimate.
+margin_threshold: 0.15
 top_k: 3
 prototype_shortlist_size: 3
+# Diagnostic CSV: one row per match_candidate call (scores, margin, accept/
+# reject) for offline threshold tuning. Comment out to disable logging.
+match_log_path: logs/reid_match_log.csv
