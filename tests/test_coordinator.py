@@ -16,6 +16,7 @@ from unittest.mock import Mock
 from project_auto.events.coordinator import IdentityCoordinator
 from project_auto.events.event_engine import EventEngine
 from project_auto.events.identification import IdentificationJob, IdentificationResult, IdentificationState
+from project_auto.events.reference_policy import CandidateKind, ReferencePolicyState
 from project_auto.memory.models import Base, ItemStatus
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.detector import Detection
@@ -91,6 +92,14 @@ def remove_signal(track_id: int, detection: Detection | None = None) -> TrackSig
     return TrackSignal(TrackSignalType.REMOVE, track_id, detection or make_detection(track_id))
 
 
+def move_start_signal(track_id: int) -> TrackSignal:
+    return TrackSignal(TrackSignalType.MOVE_START, track_id, make_detection(track_id))
+
+
+def move_end_signal(track_id: int) -> TrackSignal:
+    return TrackSignal(TrackSignalType.MOVE_END, track_id, make_detection(track_id))
+
+
 def moved_signal(track_id: int) -> TrackSignal:
     import datetime as _dt
 
@@ -115,8 +124,10 @@ def coordinator(store: DatabaseStore, worker: FakeWorker) -> IdentityCoordinator
         event_engine=event_engine,
         store=store,
         reid_model_name="test-model",
-        reference_target_count=2,
-        capture_interval_seconds=0.0,
+        max_references_per_item=2,
+        initial_capture_spacing_frames=0,
+        move_candidate_delay_frames=0,
+        candidate_retry_frames=0,
         bad_mask_cooldown_seconds=5.0,
         queue_full_retry_seconds=0.5,
         clock=Mock(return_value=0.0),
@@ -181,8 +192,10 @@ def test_queue_full_track_becomes_eligible_again_after_its_short_cooldown(
         event_engine=event_engine,
         store=store,
         reid_model_name="test-model",
-        reference_target_count=2,
-        capture_interval_seconds=0.0,
+        max_references_per_item=2,
+        initial_capture_spacing_frames=0,
+        move_candidate_delay_frames=0,
+        candidate_retry_frames=0,
         bad_mask_cooldown_seconds=5.0,
         queue_full_retry_seconds=0.5,
         clock=lambda: fake_time[0],
@@ -243,8 +256,10 @@ def test_deferred_track_is_resubmitted_only_after_its_cooldown(store: DatabaseSt
         event_engine=event_engine,
         store=store,
         reid_model_name="test-model",
-        reference_target_count=2,
-        capture_interval_seconds=0.0,
+        max_references_per_item=2,
+        initial_capture_spacing_frames=0,
+        move_candidate_delay_frames=0,
+        candidate_retry_frames=0,
         bad_mask_cooldown_seconds=5.0,
         queue_full_retry_seconds=0.5,
         clock=lambda: fake_time[0],
@@ -378,6 +393,8 @@ def test_capture_job_is_not_duplicated_while_one_is_outstanding(
     capture_jobs = [job for job in worker.submitted if job.kind == "capture"]
     assert len(capture_jobs) == 1
 
+    # The outstanding capture resolves without completing the baseline (this result
+    # carries no candidate_kind), so the still-owed baseline reference is nominated.
     item_id = store.list_present_items()[0].id
     worker.push_result(
         IdentificationResult(kind="capture", track_id=7, status="captured", item_id=item_id, reference=reference())
@@ -385,6 +402,154 @@ def test_capture_job_is_not_duplicated_while_one_is_outstanding(
     coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     capture_jobs = [job for job in worker.submitted if job.kind == "capture"]
     assert len(capture_jobs) == 2  # eligible again now that the prior capture resolved
+
+
+def test_static_item_stops_capturing_once_its_baseline_is_complete(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    """A still object must not keep producing near-identical references forever."""
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
+    item_id = store.list_present_items()[0].id
+
+    # Baseline reference 1 is the resolve embedding; completing reference 2 ends
+    # the baseline (initial_reference_count defaults to 2).
+    worker.push_result(
+        IdentificationResult(
+            kind="capture",
+            track_id=7,
+            status="captured",
+            item_id=item_id,
+            reference=reference(),
+            candidate_kind=CandidateKind.INITIAL,
+        )
+    )
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    baseline_jobs = len([job for job in worker.submitted if job.kind == "capture"])
+
+    for _ in range(50):
+        coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+
+    assert coordinator.reference_policy.state(7) is ReferencePolicyState.IDLE
+    assert len([job for job in worker.submitted if job.kind == "capture"]) == baseline_jobs
+
+
+def test_move_start_arms_capture_and_is_never_persisted_as_an_event(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
+    item_id = store.list_present_items()[0].id
+    worker.push_result(
+        IdentificationResult(
+            kind="capture",
+            track_id=7,
+            status="captured",
+            item_id=item_id,
+            reference=reference(),
+            candidate_kind=CandidateKind.INITIAL,
+        )
+    )
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+    history_before = len(store.get_item_history(item_id))
+    settled_jobs = len([job for job in worker.submitted if job.kind == "capture"])
+
+    coordinator.handle_frame(frame(), [move_start_signal(7)], {7: make_detection(7)})
+
+    assert coordinator.reference_policy.state(7) is ReferencePolicyState.ARMED
+    movement_jobs = [
+        job
+        for job in worker.submitted
+        if job.kind == "capture" and job.candidate_kind is CandidateKind.MOVEMENT
+    ]
+    assert len(movement_jobs) == 1
+    assert len([job for job in worker.submitted if job.kind == "capture"]) == settled_jobs + 1
+    # A runtime transition only: it must not write an ItemEvent.
+    assert len(store.get_item_history(item_id)) == history_before
+
+
+def test_movement_candidates_are_bounded_per_movement_event(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
+    item_id = store.list_present_items()[0].id
+    coordinator.handle_frame(frame(), [move_start_signal(7)], {})
+
+    # Each frame resolves the outstanding job immediately, so only the policy's
+    # attempt budget limits how many candidates one movement can produce.
+    for _ in range(30):
+        worker.push_result(
+            IdentificationResult(
+                kind="capture",
+                track_id=7,
+                status="skipped",
+                item_id=item_id,
+                candidate_kind=CandidateKind.MOVEMENT,
+            )
+        )
+        coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+
+    movement_jobs = [
+        job
+        for job in worker.submitted
+        if job.kind == "capture" and job.candidate_kind is CandidateKind.MOVEMENT
+    ]
+    assert len(movement_jobs) == coordinator.max_movement_reference_attempts
+    assert coordinator.reference_policy.state(7) is ReferencePolicyState.EXHAUSTED
+
+
+def test_move_end_nominates_exactly_one_final_candidate_then_idles(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
+    )
+    coordinator.handle_frame(frame(), [], {})
+    item_id = store.list_present_items()[0].id
+    worker.push_result(
+        IdentificationResult(
+            kind="capture",
+            track_id=7,
+            status="captured",
+            item_id=item_id,
+            reference=reference(),
+            candidate_kind=CandidateKind.INITIAL,
+        )
+    )
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+
+    coordinator.handle_frame(frame(), [move_end_signal(7)], {7: make_detection(7)})
+    worker.push_result(
+        IdentificationResult(
+            kind="capture",
+            track_id=7,
+            status="captured",
+            item_id=item_id,
+            reference=reference(),
+            candidate_kind=CandidateKind.MOVE_END,
+        )
+    )
+    for _ in range(20):
+        coordinator.handle_frame(frame(), [], {7: make_detection(7)})
+
+    move_end_jobs = [
+        job
+        for job in worker.submitted
+        if job.kind == "capture" and job.candidate_kind is CandidateKind.MOVE_END
+    ]
+    assert len(move_end_jobs) == 1
+    assert coordinator.reference_policy.state(7) is ReferencePolicyState.IDLE
 
 
 def test_moved_signal_before_identity_resolves_is_dropped_not_crashed(

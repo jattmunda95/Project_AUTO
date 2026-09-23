@@ -1,5 +1,9 @@
 """Interactive polygon calibration using the application's camera and store."""
 
+# TODO(region): validate polygon calibration and ADD/MOVED/REMOVED/RETURNED region state on
+# physical hardware, including overlap selection, current contents, historical names, and w/r
+# terminal highlights. Only automated tests with simulated input have exercised this so far.
+
 from pathlib import Path
 
 import cv2

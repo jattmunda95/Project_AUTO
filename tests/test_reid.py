@@ -1,5 +1,8 @@
 """Offline matching tests using synthetic, unit-normalized embeddings."""
 
+# TODO(tests): add/verify targeted coverage for weighted descriptors (DINO+color+aspect
+# blending), margin-rejection behavior, and missing-descriptor fallback to DINO-only scoring.
+
 from pathlib import Path
 from unittest.mock import Mock, patch
 

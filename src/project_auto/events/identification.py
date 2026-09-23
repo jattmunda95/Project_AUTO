@@ -23,6 +23,7 @@ from typing import Callable, Literal
 import numpy as np
 from numpy.typing import NDArray
 
+from project_auto.events.reference_policy import CandidateKind
 from project_auto.perception.detector import Detection
 from project_auto.perception.scene_processor import PreparedReference
 
@@ -57,6 +58,9 @@ class IdentificationJob:
     box: tuple[int, int, int, int] | None = None
     precomputed_reference: PreparedReference | None = None
     detection: Detection | None = None
+    # Why the reference policy nominated this capture. Baseline (INITIAL) captures
+    # are not novelty-gated: two similar baseline views are expected and wanted.
+    candidate_kind: CandidateKind | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +74,9 @@ class IdentificationResult:
     similarity: float = 0.0
     reference: PreparedReference | None = None
     failure_reason: str | None = None
+    # Echoed back from the job so the coordinator can tell the reference policy
+    # which nomination this outcome belongs to.
+    candidate_kind: CandidateKind | None = None
 
 
 _OUTSTANDING = (IdentificationState.QUEUED, IdentificationState.PROCESSING)

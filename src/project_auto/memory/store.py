@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from project_auto.memory.models import Base, Item, ItemEmbedding, ItemEvent, ItemEventType, ItemStatus, Region, utc_now
 from project_auto.memory.regions import Box, box_area_fraction, polygon_area, resolve_region, validate_polygon
+from project_auto.utils.logging import Category, log_action
 
 
 if TYPE_CHECKING:
@@ -110,7 +111,17 @@ class DatabaseStore:
         # Existing Project AUTO databases require manual migration or database recreation
         # before the newly added Item and ItemEvent columns will exist. create_all does
         # not alter existing tables; never delete or automatically migrate user data here.
+        # TODO(db): confirm the intended live database and reset/recovery decision. A
+        # missing-column startup failure was diagnosed once; a manual schema fix passed on
+        # a copy but was never applied to the live file, and the live file has since been
+        # edited by hand outside this codebase (records manually deleted). Inspect and back
+        # up data/project_auto.db before any further deliberate migration or reset.
         Base.metadata.create_all(self.engine)
+
+    # TODO(schema): track model/preprocessing/descriptor-layout compatibility and prototype
+    # provenance. Nothing currently records which embedding model, preprocessing pipeline, or
+    # descriptor layout produced a stored ItemEmbedding/prototype, so a future model or
+    # preprocessing change could silently mix incompatible vectors in the same gallery.
 
     @_retry_on_locked()
     def create_region(self, name: str, polygon: list[list[int]]) -> Region:
@@ -170,6 +181,7 @@ class DatabaseStore:
         frame_size: tuple[int, int] | None,
     ) -> None:
         """Resolve both evidence boxes using the caller's transaction."""
+        region_names: dict[str, str | None] = {}
         for side in ("source", "destination"):
             box = getattr(event_record, f"{side}_box")
             region = self._resolve_box_region(session, box)
@@ -177,6 +189,17 @@ class DatabaseStore:
             if box is not None:
                 setattr(event_record, f"{side}_region", region.name if region else None)
             setattr(event_record, f"{side}_box_area_fraction", box_area_fraction(box, frame_size))
+            if box is not None:
+                region_names[side] = region.name if region else None
+
+        if region_names:
+            log_action(
+                Category.REGION,
+                track=event_record.source_track_id,
+                item=event_record.item_id,
+                event=event_record.event_type.value,
+                **region_names,
+            )
 
     def _set_event_spatial_state(
         self, session: Session, item: Item, event_record: ItemEvent,

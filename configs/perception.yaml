@@ -1,3 +1,6 @@
+# TODO(perf): measure frame dropout/latency at the current confidence=0.18/image_size=960.
+# agnostic_nms inherits Ultralytics' inspected default of False (not explicitly overridden
+# here); no throughput/accuracy improvement over these values is established yet.
 source_model: models/yolo11s.pt
 openvino_model: models/yolo11s_openvino_model
 confidence: 0.18

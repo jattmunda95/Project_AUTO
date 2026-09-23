@@ -35,7 +35,7 @@ def worker(scene_processor: Mock, store: Mock) -> IdentificationWorker:
         scene_processor=scene_processor,
         store=store,
         reid_model_name="test-model",
-        reference_target_count=2,
+        max_references_per_item=2,
         job_queue_max_size=2,
     )
 

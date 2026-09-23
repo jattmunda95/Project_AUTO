@@ -26,9 +26,13 @@ from dataclasses import dataclass, field
 from time import monotonic
 from typing import Protocol
 
+import numpy as np
+
 from project_auto.events.identification import IdentificationJob, IdentificationResult
+from project_auto.events.reference_policy import CandidateKind
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.scene_processor import SceneProcessor
+from project_auto.utils.logging import Category, log_action
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +59,18 @@ class IdentificationWorker:
     scene_processor: SceneProcessor
     store: DatabaseStore
     reid_model_name: str
-    reference_target_count: int
+    # Hard ceiling on stored references per item. TODO(gallery): V1 simply stops
+    # accepting new references at the cap; a diversity-aware replacement (evict the
+    # most redundant member to admit a genuinely new appearance) is future work.
+    max_references_per_item: int
     job_queue_max_size: int = 8
+    # Expensive-stage reference-quality gate, applied only to capture jobs so that
+    # identity resolution keeps working on views too poor to learn from.
+    min_mask_score: float = 0.0
+    min_mask_occupancy: float = 0.0
+    # A candidate at or above this similarity to an existing reference of the same
+    # item adds no appearance diversity and is rejected as redundant.
+    reference_novelty_threshold: float = 1.0
     _job_queue: queue.Queue = field(init=False, repr=False)
     _result_queue: queue.Queue = field(init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
@@ -106,6 +120,10 @@ class IdentificationWorker:
         self._gallery = self.store.load_reid_gallery(self.reid_model_name, statuses=None)
 
     def _run(self) -> None:
+        # TODO(worker): this initial refresh_gallery() call is outside per-job exception
+        # handling (_process_safely), so a schema/DB failure here silently stops the worker
+        # thread without surfacing any error to the main thread or the user. Improve startup
+        # failure reporting instead of letting the thread just exit.
         self.refresh_gallery()
         while True:
             job = self._job_queue.get()
@@ -119,6 +137,7 @@ class IdentificationWorker:
             result = self._process(job)
         except Exception as exc:  # noqa: BLE001 - a bad job must not kill the worker
             logger.exception("identification.worker_error track_id=%s kind=%s", job.track_id, job.kind)
+            log_action(Category.ERROR, track=job.track_id, kind=job.kind, error=repr(exc))
             result = IdentificationResult(
                 kind=job.kind,
                 track_id=job.track_id,
@@ -162,6 +181,44 @@ class IdentificationWorker:
             reference=decision.reference,
         )
 
+    def _reject_capture(
+        self, job: IdentificationJob, reason: str, **evidence: object
+    ) -> IdentificationResult:
+        """Report one candidate that will not become a reference.
+
+        Returning before add_reference_if_needed is what keeps a rejected
+        candidate from touching the item's stored prototype.
+        """
+        log_action(
+            Category.CAPTURE,
+            track=job.track_id,
+            item=job.item_id,
+            saved=False,
+            kind=job.candidate_kind.value if job.candidate_kind else None,
+            reason=reason,
+            **evidence,
+        )
+        return IdentificationResult(
+            kind="capture",
+            track_id=job.track_id,
+            status="skipped",
+            item_id=job.item_id,
+            failure_reason=reason,
+            candidate_kind=job.candidate_kind,
+        )
+
+    def _best_existing_similarity(self, item_id: int, embedding) -> float:
+        """Return the highest similarity to this item's stored references, or 0.0.
+
+        Embeddings are unit-normalized on the way in, so the dot product is their
+        cosine similarity. An item with no references yet is maximally novel.
+        """
+        for entry in self._gallery:
+            if entry.item_id != item_id or len(entry.embeddings) == 0:
+                continue
+            return float(np.max(entry.embeddings @ np.asarray(embedding, dtype=np.float32)))
+        return 0.0
+
     def _process_capture(self, job: IdentificationJob) -> IdentificationResult:
         if job.item_id is None:
             raise ValueError("A capture job requires an item_id")
@@ -170,7 +227,7 @@ class IdentificationWorker:
         if reference is None:
             if job.frame is None or job.box is None:
                 raise ValueError("A capture job needs a precomputed reference or frame+box")
-            reference = self.scene_processor.prepare_reference(job.frame, job.box)
+            reference = self.scene_processor.prepare_reference(job.frame, job.box, job.track_id)
 
         if reference is None:
             return IdentificationResult(
@@ -179,21 +236,43 @@ class IdentificationWorker:
                 status="pending",
                 item_id=job.item_id,
                 failure_reason="unusable_reference",
+                candidate_kind=job.candidate_kind,
             )
+
+        if reference.sam_score < self.min_mask_score:
+            return self._reject_capture(
+                job, "low_mask_score", sam_score=reference.sam_score
+            )
+        if reference.mask_occupancy < self.min_mask_occupancy:
+            return self._reject_capture(
+                job, "low_mask_occupancy", mask_occupancy=reference.mask_occupancy
+            )
+
+        # Baseline references are deliberately not novelty-gated: the two initial
+        # views of a newly added item are expected to look alike.
+        if job.candidate_kind is not CandidateKind.INITIAL:
+            similarity = self._best_existing_similarity(job.item_id, reference.embedding)
+            if similarity >= self.reference_novelty_threshold:
+                return self._reject_capture(job, "redundant", similarity=similarity)
 
         saved, _ = self.store.add_reference_if_needed(
             item_id=job.item_id,
             embedding=reference.embedding,
             model_name=self.reid_model_name,
-            target_count=self.reference_target_count,
+            target_count=self.max_references_per_item,
             aspect_ratio=reference.aspect_ratio,
             color_histogram=reference.color_histogram,
         )
         if not saved:
-            return IdentificationResult(
-                kind="capture", track_id=job.track_id, status="skipped", item_id=job.item_id
-            )
+            return self._reject_capture(job, "gallery_full")
 
+        log_action(
+            Category.CAPTURE,
+            track=job.track_id,
+            item=job.item_id,
+            saved=True,
+            kind=job.candidate_kind.value if job.candidate_kind else None,
+        )
         self.refresh_gallery()
         return IdentificationResult(
             kind="capture",
@@ -201,4 +280,5 @@ class IdentificationWorker:
             status="captured",
             item_id=job.item_id,
             reference=reference,
+            candidate_kind=job.candidate_kind,
         )

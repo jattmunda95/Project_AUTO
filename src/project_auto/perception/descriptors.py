@@ -1,7 +1,10 @@
-"""Standalone size and color descriptors used to supplement embedding similarity.
+"""Standalone size, color, geometry and focus descriptors supplementing similarity.
 
 Subfunctions:
 - aspect_ratio reads width/height directly from a detection box.
+- clip_box_to_frame intersects a predicted box with the image bounds.
+- frame_visibility_ratio reports how much of a predicted box lies inside the image.
+- sharpness measures focus as the variance of a crop's Laplacian.
 - hsv_histogram builds a lighting-invariant Hue+Saturation distribution over the
   masked (foreground-only) pixels of a crop.
 - color_similarity compares two histograms with Bhattacharyya distance.
@@ -11,6 +14,8 @@ Subfunctions:
 Pure functions only: no tracker, gallery, database, or model state. Callers own
 when descriptors are computed (before background replacement, so the fill color
 never enters the histogram) and how the resulting similarities are combined.
+These functions measure; they never apply a policy threshold themselves, so the
+acceptance thresholds live in configuration next to the policy that reads them.
 """
 
 from __future__ import annotations
@@ -42,6 +47,71 @@ def aspect_ratio(box: tuple[int, int, int, int]) -> float:
         return 0.0
     ratio = width / height
     return max(ratio, 1.0 / ratio)
+
+
+def clip_box_to_frame(
+    box: tuple[int, int, int, int],
+    frame_size: tuple[int, int],
+) -> tuple[int, int, int, int] | None:
+    """Return the part of a predicted box inside the image, or None when outside.
+
+    frame_size is (width, height), matching the convention already used for event
+    frame sizes. The caller keeps the original predicted box: only clip when
+    indexing pixels, never before measuring how much of the object is visible.
+    """
+    frame_width, frame_height = frame_size
+    x1, y1, x2, y2 = box
+    clipped_x1 = max(0, min(int(x1), frame_width))
+    clipped_y1 = max(0, min(int(y1), frame_height))
+    clipped_x2 = max(0, min(int(x2), frame_width))
+    clipped_y2 = max(0, min(int(y2), frame_height))
+    if clipped_x2 <= clipped_x1 or clipped_y2 <= clipped_y1:
+        return None
+    return (clipped_x1, clipped_y1, clipped_x2, clipped_y2)
+
+
+def frame_visibility_ratio(
+    box: tuple[int, int, int, int],
+    frame_size: tuple[int, int],
+) -> float:
+    """Return the fraction of a predicted box's area that lies inside the image.
+
+    1.0 means fully inside; 0.0 means degenerate or entirely outside. A box that
+    merely touches an image edge is still fully visible, so callers must threshold
+    this ratio rather than rejecting any box that reaches the boundary.
+    """
+    x1, y1, x2, y2 = box
+    full_area = (x2 - x1) * (y2 - y1)
+    if full_area <= 0:
+        return 0.0
+
+    visible_box = clip_box_to_frame(box, frame_size)
+    if visible_box is None:
+        return 0.0
+
+    visible_x1, visible_y1, visible_x2, visible_y2 = visible_box
+    visible_area = (visible_x2 - visible_x1) * (visible_y2 - visible_y1)
+    return visible_area / full_area
+
+
+def sharpness(image: NDArray[np.uint8]) -> float:
+    """Return the variance of the image's Laplacian; higher means better focus.
+
+    Accepts a BGR or single-channel crop. Returns 0.0 for an empty crop or one
+    too small for the 3x3 Laplacian kernel to be meaningful. The absolute scale
+    depends on crop size and texture, so it is only comparable against a
+    configured threshold, not across unrelated objects.
+    """
+    if image is None or image.size == 0:
+        return 0.0
+    if image.ndim == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+    if gray.shape[0] < 3 or gray.shape[1] < 3:
+        return 0.0
+
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
 def hsv_histogram(

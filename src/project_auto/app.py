@@ -27,6 +27,7 @@ from project_auto.perception.scene_processor import SceneProcessor, SceneProcess
 from project_auto.perception.segmenter import SamSegmenter, SegmenterConfig
 from project_auto.perception.tracker import DetectionTracker
 from project_auto.utils.drawing import draw_detections, draw_regions
+from project_auto.utils.logging import Category, log_action
 from project_auto.region_queries import query_regions
 
 
@@ -91,18 +92,36 @@ def run_app() -> None:
             event_engine=event_engine,
             store=store,
             reid_model_name=reid_config.model_name,
-            reference_target_count=int(scene_processor_settings["reference_target_count"]),
-            capture_interval_seconds=float(scene_processor_settings["capture_interval_seconds"]),
+            max_references_per_item=int(scene_processor_settings["max_references_per_item"]),
             bad_mask_cooldown_seconds=float(scene_processor_settings["bad_mask_cooldown_seconds"]),
             queue_full_retry_seconds=float(scene_processor_settings["queue_full_retry_seconds"]),
             min_box_area=int(scene_processor_settings["min_box_area"]),
             min_detector_confidence=float(scene_processor_settings["min_detector_confidence"]),
-            edge_margin_pixels=int(scene_processor_settings["edge_margin_pixels"]),
+            initial_reference_count=int(scene_processor_settings["initial_reference_count"]),
+            initial_capture_spacing_frames=int(
+                scene_processor_settings["initial_capture_spacing_frames"]
+            ),
+            move_candidate_delay_frames=int(
+                scene_processor_settings["move_candidate_delay_frames"]
+            ),
+            candidate_retry_frames=int(scene_processor_settings["candidate_retry_frames"]),
+            max_movement_reference_attempts=int(
+                scene_processor_settings["max_movement_reference_attempts"]
+            ),
+            min_reference_sharpness=float(scene_processor_settings["min_reference_sharpness"]),
+            min_reference_frame_visibility=float(
+                scene_processor_settings["min_reference_frame_visibility"]
+            ),
+            min_mask_score=float(scene_processor_settings["min_mask_score"]),
+            min_mask_occupancy=float(scene_processor_settings["min_mask_occupancy"]),
+            reference_novelty_threshold=float(
+                scene_processor_settings["reference_novelty_threshold"]
+            ),
             job_queue_max_size=int(scene_processor_settings["job_queue_max_size"]),
         )
 
         with camera:
-            print(f"Camera opened on device {camera.device}")
+            log_action(Category.SYSTEM, event="camera_opened", device=camera.device)
             highlighted_regions = []
             highlight_frames_left = 0
             highlight_duration = int(table_settings.get("regions", {}).get("highlight_frames", 150))

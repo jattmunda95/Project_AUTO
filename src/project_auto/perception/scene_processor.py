@@ -32,6 +32,7 @@ from project_auto.memory.reid import GalleryEntry, ReidMatcher
 from project_auto.perception.descriptors import aspect_ratio as compute_aspect_ratio
 from project_auto.perception.descriptors import hsv_histogram
 from project_auto.perception.segmenter import SamSegmenter
+from project_auto.utils.logging import Category, log_action
 
 IdentityDecisionType = Literal["new", "existing", "pending"]
 
@@ -64,6 +65,16 @@ class PreparedReference:
     # Flattened H+S histogram, computed from the masked crop before background
     # replacement so the fill colour never enters the distribution.
     color_histogram: NDArray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
+    # Evidence carried for the reference-quality gate applied by the capture path.
+    # prepare_reference stays permissive (identity resolution must still work on an
+    # imperfect view); only the caller saving a reference thresholds these.
+    sam_score: float = 0.0
+    # Masked foreground pixels divided by the segmented box area. Low values mean
+    # the box mostly contains something other than the segmented object.
+    # TODO(occlusion): this is a mask-sanity measure, NOT occlusion detection. It
+    # cannot distinguish a physically small object from a partially hidden one;
+    # true partial-occlusion reasoning needs evidence this pipeline does not have.
+    mask_occupancy: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,30 +109,33 @@ class SceneProcessor:
         self,
         frame: NDArray[np.uint8],
         box: tuple[int, int, int, int],
+        source_track_id: int | None = None,
     ) -> PreparedReference | None:
         """Crop, mask, and embed one detection box; None when it is unusable.
 
         The segmenter clips and validates the box. Its keep-mask (True retains) is
         applied within the crop, background pixels are replaced with the configured
         colour, and the result is embedded with ReID's own preprocessing.
+        source_track_id is optional and used only for diagnostic output.
         """
         segmentation = self._segmenter.segment(frame, [box])[0]
         if segmentation is None:
-            print(f"[SceneProcessor] prepare_reference: box={box} -> segmenter returned no usable mask")
+            log_action(Category.REJECT, track=source_track_id, box=box, reason="no_mask")
             return None
 
         x1, y1, x2, y2 = segmentation.box
         mask_pixels = int(segmentation.mask[y1:y2, x1:x2].sum())
         if mask_pixels < self.config.min_mask_pixels:
-            print(
-                f"[SceneProcessor] prepare_reference: box={box} -> mask_pixels={mask_pixels} "
-                f"below min_mask_pixels={self.config.min_mask_pixels}, sam_score={segmentation.score:.4f}"
+            log_action(
+                Category.REJECT,
+                track=source_track_id,
+                box=box,
+                reason="mask_too_small",
+                mask_pixels=mask_pixels,
+                min_mask_pixels=self.config.min_mask_pixels,
+                sam_score=segmentation.score,
             )
             return None
-        print(
-            f"[SceneProcessor] prepare_reference: box={box} -> usable mask, mask_pixels={mask_pixels}, "
-            f"sam_score={segmentation.score:.4f}"
-        )
 
         crop = frame[y1:y2, x1:x2]
         mask = segmentation.mask[y1:y2, x1:x2]
@@ -136,11 +150,14 @@ class SceneProcessor:
 
         image = Image.fromarray(masked_rgb)
         embedding = self._matcher.create_embedding(image)
+        box_area = (x2 - x1) * (y2 - y1)
         return PreparedReference(
             crop=image,
             embedding=embedding,
             aspect_ratio=compute_aspect_ratio(segmentation.box),
             color_histogram=color_histogram,
+            sam_score=float(segmentation.score),
+            mask_occupancy=(mask_pixels / box_area) if box_area > 0 else 0.0,
         )
 
     def process(
@@ -156,9 +173,12 @@ class SceneProcessor:
         decides whether and when to retry. A usable crop is always embedded and
         returned, whether or not it matched an existing item.
         """
-        reference = self.prepare_reference(frame, box)
+        # TODO(perf): prepare_reference always runs full SAM+DINO inference even when the
+        # gallery is nonempty; measure whether the resolve path is redoing embedding work
+        # that a cheaper prefilter could skip before optimizing.
+        reference = self.prepare_reference(frame, box, source_track_id)
         if reference is None:
-            print(f"[SceneProcessor] process: track_id={source_track_id} -> PENDING (no usable reference)")
+            # prepare_reference already logged the REJECT reason (no_mask/mask_too_small).
             return IdentityDecision(
                 decision="pending",
                 source_track_id=source_track_id,
@@ -180,11 +200,8 @@ class SceneProcessor:
         # margin-failure case should become its own "unknown" IdentityDecision
         # carrying the tied item_ids, so a user can disambiguate, instead of
         # both cases being flattened into "new" here.
+        # match_candidate already logged the MATCH/AMBIG/NEW decision with full scores.
         decision: IdentityDecisionType = "existing" if match.accepted else "new"
-        print(
-            f"[SceneProcessor] process: track_id={source_track_id} -> decision={decision} "
-            f"item_id={match.item_id} similarity={match.similarity:.4f}"
-        )
         return IdentityDecision(
             decision=decision,
             source_track_id=source_track_id,

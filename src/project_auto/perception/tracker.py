@@ -101,6 +101,14 @@ class TrackSignalType(str, Enum):
     # TODO(ReID): Keep RETURNED emission inactive until associative memory resolves
     # an observation to a permanent item_id; a tracker ID alone is insufficient.
     RETURNED = "returned"
+    # Runtime tracking transitions, not persisted ItemEvents. MOVE_START fires once
+    # when a STABLE track exits its placement buffer; MOVE_END fires once when a
+    # MOVING track re-stabilizes (in the same frame as, and immediately before, any
+    # MOVED signal). MOVED remains the authoritative persisted "meaningful location
+    # change" semantic; a MOVE_START/MOVE_END pair can occur without MOVED ever
+    # applying should the caller decide the net displacement was not meaningful.
+    MOVE_START = "move_start"
+    MOVE_END = "move_end"
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +183,7 @@ class DetectionTracker:
         track_id: int,
         detection: Detection,
         now: float,
-    ) -> TrackSignal | None:
+    ) -> list[TrackSignal]:
         """Emit ADD after one visible candidate completes its timed attempt."""
         active_track = self._tracks.get(track_id)
         if active_track is None:
@@ -185,11 +193,10 @@ class DetectionTracker:
             )
             self._tracks[track_id] = active_track
         elif active_track.status is TrackStatus.MISSING:
-            self._restore_missing_track(active_track, detection)
-            return None
+            return self._restore_missing_track(track_id, active_track, detection)
         elif active_track.status is TrackStatus.STABLE:
-            self._update_stable_track(active_track, detection)
-            return None
+            signal = self._update_stable_track(track_id, active_track, detection)
+            return [signal] if signal is not None else []
         elif active_track.status is TrackStatus.MOVING:
             return self._update_moving_track(
                 track_id,
@@ -211,25 +218,28 @@ class DetectionTracker:
                 detection.box,
                 self.movement_buffer_scale,
             )
-            return TrackSignal(
-                signal_type=TrackSignalType.ADD,
-                track_id=track_id,
-                detection=detection,
-            )
+            return [
+                TrackSignal(
+                    signal_type=TrackSignalType.ADD,
+                    track_id=track_id,
+                    detection=detection,
+                )
+            ]
 
-        return None
+        return []
 
     def _update_stable_track(
         self,
+        track_id: int,
         active_track: _ActiveTrack,
         detection: Detection,
-    ) -> None:
+    ) -> TrackSignal | None:
         """Refresh a stable track and begin movement after its buffer is exited."""
         active_track.detection = detection
         if active_track.buffer_box is None:
             raise ValueError("A stable track requires a placement buffer")
         if _is_box_inside(detection.box, active_track.buffer_box):
-            return
+            return None
 
         active_track.status = TrackStatus.MOVING
         active_track.movement_started_at = self.timestamp_clock()
@@ -237,14 +247,20 @@ class DetectionTracker:
         active_track.stopped_since = None
         active_track.stopped_at = None
 
+        return TrackSignal(
+            signal_type=TrackSignalType.MOVE_START,
+            track_id=track_id,
+            detection=detection,
+        )
+
     def _update_moving_track(
         self,
         track_id: int,
         active_track: _ActiveTrack,
         detection: Detection,
         now: float,
-    ) -> TrackSignal | None:
-        """Emit MOVED after a visible moving track remains stopped long enough."""
+    ) -> list[TrackSignal]:
+        """Emit MOVE_END then MOVED after a visible moving track stops long enough."""
         reference_box = active_track.stability_reference_box
         if reference_box is None:
             raise ValueError("A moving track requires a stability reference box")
@@ -255,16 +271,16 @@ class DetectionTracker:
             active_track.stability_reference_box = detection.box
             active_track.stopped_since = None
             active_track.stopped_at = None
-            return None
+            return []
 
         if active_track.stopped_since is None:
             active_track.stopped_since = now
             active_track.stopped_at = self.timestamp_clock()
-            return None
+            return []
 
         elapsed = now - active_track.stopped_since
         if elapsed < self.movement_stopped_confirmation_seconds:
-            return None
+            return []
         if active_track.movement_started_at is None:
             raise ValueError("A moving track requires a movement start timestamp")
         if active_track.stopped_at is None:
@@ -272,7 +288,12 @@ class DetectionTracker:
         if active_track.stable_box is None:
             raise ValueError("A moving track requires a source placement box")
 
-        signal = TrackSignal(
+        move_end_signal = TrackSignal(
+            signal_type=TrackSignalType.MOVE_END,
+            track_id=track_id,
+            detection=detection,
+        )
+        moved_signal = TrackSignal(
             signal_type=TrackSignalType.MOVED,
             track_id=track_id,
             detection=detection,
@@ -292,13 +313,14 @@ class DetectionTracker:
         active_track.stopped_since = None
         active_track.stopped_at = None
 
-        return signal
+        return [move_end_signal, moved_signal]
 
     def _restore_missing_track(
         self,
+        track_id: int,
         active_track: _ActiveTrack,
         detection: Detection,
-    ) -> None:
+    ) -> list[TrackSignal]:
         """Restore a visible track to the lifecycle state preceding its absence."""
         restored_status = active_track.status_before_missing or TrackStatus.STABLE
         active_track.status = restored_status
@@ -306,12 +328,16 @@ class DetectionTracker:
         active_track.missing_since = None
 
         if restored_status is TrackStatus.STABLE:
-            self._update_stable_track(active_track, detection)
-        else:
-            active_track.detection = detection
-            active_track.stability_reference_box = detection.box
-            active_track.stopped_since = None
-            active_track.stopped_at = None
+            # The track may have drifted outside its buffer while undetected; this
+            # can itself be a genuine STABLE -> MOVING transition, so propagate it.
+            signal = self._update_stable_track(track_id, active_track, detection)
+            return [signal] if signal is not None else []
+
+        active_track.detection = detection
+        active_track.stability_reference_box = detection.box
+        active_track.stopped_since = None
+        active_track.stopped_at = None
+        return []
 
     def _update_missing_lifecycle(
         self,
@@ -383,8 +409,6 @@ class DetectionTracker:
                 signals.append(signal)
 
         for track_id, detection in tracked_detections.items():
-            signal = self._update_add_lifecycle(track_id, detection, now)
-            if signal is not None:
-                signals.append(signal)
+            signals.extend(self._update_add_lifecycle(track_id, detection, now))
 
         return signals

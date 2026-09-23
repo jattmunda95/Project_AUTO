@@ -31,6 +31,7 @@ from PIL import Image
 from transformers import AutoImageProcessor, AutoModel
 
 from project_auto.perception.descriptors import color_similarity, size_similarity
+from project_auto.utils.logging import Category, log_action
 
 # Final score = DINO_WEIGHT * dino_similarity + COLOR_WEIGHT * color_similarity
 #             + ASPECT_WEIGHT * aspect_similarity
@@ -43,6 +44,9 @@ ASPECT_WEIGHT = 0.15
 class ReidConfig:
     """Configuration for embedding extraction and match acceptance."""
 
+    # TODO(calibrate): acceptance_threshold=0.55 and margin_threshold=0.15 (configs/reid.yaml)
+    # are uncalibrated for the current weighted score (0.65 DINO + 0.20 color + 0.15 aspect).
+    # Tune both against logged same/different-item scores in logs/reid_match_log.csv.
     model_name: str
     device: str
     acceptance_threshold: float
@@ -245,7 +249,7 @@ class ReidMatcher:
         Does not mutate tracker or database state; callers own persistence.
         """
         if not gallery:
-            print("[ReID] match_candidate: gallery is empty, nothing to match against -> NEW")
+            log_action(Category.NEW, track=source_track_id, reason="gallery_empty")
             return ReidMatch(item_id=None, similarity=0.0, accepted=False)
 
         query_embedding = self.create_embedding(crop)
@@ -287,14 +291,37 @@ class ReidMatcher:
             best_score >= self.config.acceptance_threshold
             and margin >= self.config.margin_threshold
         )
+        ambiguous = not accepted and best_score >= self.config.acceptance_threshold
 
-        print(
-            f"[ReID] match_candidate: gallery_size={len(gallery)} shortlisted={len(shortlist)} "
-            f"scores={[(item_id, score) for item_id, score, *_ in scored]} "
-            f"best_item_id={best_item_id} best_score={best_score:.4f} margin={margin:.4f} "
-            f"threshold={self.config.acceptance_threshold:.4f} "
-            f"margin_threshold={self.config.margin_threshold:.4f} accepted={accepted}"
-        )
+        if accepted:
+            log_action(
+                Category.MATCH,
+                track=source_track_id,
+                item=best_item_id,
+                score=best_score,
+                margin=margin,
+                dino=best_dino,
+                color=best_color,
+                aspect=best_aspect,
+            )
+        elif ambiguous:
+            log_action(
+                Category.AMBIGUOUS,
+                track=source_track_id,
+                best_item=best_item_id,
+                score=best_score,
+                margin=margin,
+                margin_threshold=self.config.margin_threshold,
+            )
+        else:
+            log_action(
+                Category.NEW,
+                track=source_track_id,
+                reason="below_threshold",
+                best_item=best_item_id,
+                score=best_score,
+                threshold=self.config.acceptance_threshold,
+            )
 
         self._log_match(
             {

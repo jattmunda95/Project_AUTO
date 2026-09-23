@@ -20,6 +20,7 @@ from project_auto.memory.state_machine import (
 )
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.tracker import TrackSignal, TrackSignalType
+from project_auto.utils.logging import Category, log_action
 
 
 class EventEngine:
@@ -43,6 +44,10 @@ class EventEngine:
             for track_id, associated_item_id in self._item_ids_by_track_id.items()
         )
 
+    # TODO(occlusion): remaining occlusion/status-change semantics (mark_occluded/mark_present
+    # transitions and when the coordinator should trigger them) are not yet defined here, and
+    # no high-quality object/context evidence image is saved alongside lifecycle events.
+
     def associate_existing_item(self, track_id: int, item_id: int) -> None:
         """Bind a visible track to an already-present matched item; no event recorded."""
         if track_id in self._item_ids_by_track_id:
@@ -51,6 +56,7 @@ class EventEngine:
             raise ValueError(f"Item {item_id} is already claimed by a visible track")
 
         self._item_ids_by_track_id[track_id] = item_id
+        log_action(Category.ASSOCIATE, track=track_id, item=item_id)
 
     def process_signal(
         self,
@@ -92,6 +98,7 @@ class EventEngine:
             frame_size=self.frame_size,
         )
         self._item_ids_by_track_id[signal.track_id] = item.id
+        log_action(Category.EVENT, type="ADDED", track=signal.track_id, item=item.id, class_name=item.class_name)
 
         return item, added_event
 
@@ -116,7 +123,7 @@ class EventEngine:
         if item_id is None:
             raise ValueError(f"Track {signal.track_id} is not associated with an item")
 
-        return self.store.record_movement(
+        moved_event = self.store.record_movement(
             item_id=item_id,
             started_at=signal.started_at,
             finished_at=signal.finished_at,
@@ -126,6 +133,8 @@ class EventEngine:
             detector_confidence=signal.detection.confidence,
             frame_size=self.frame_size,
         )
+        log_action(Category.EVENT, type="MOVED", track=signal.track_id, item=item_id)
+        return moved_event
 
     def process_remove(
         self,
@@ -158,6 +167,7 @@ class EventEngine:
             frame_size=self.frame_size,
         )
         del self._item_ids_by_track_id[signal.track_id]
+        log_action(Category.EVENT, type="REMOVED", track=signal.track_id, item=item_id)
 
         return removed_event
 
@@ -187,5 +197,6 @@ class EventEngine:
             frame_size=self.frame_size,
         )
         self._item_ids_by_track_id[signal.track_id] = signal.item_id
+        log_action(Category.EVENT, type="RETURNED", track=signal.track_id, item=signal.item_id)
 
         return returned_event

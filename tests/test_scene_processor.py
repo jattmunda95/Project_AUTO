@@ -1,5 +1,9 @@
 """Standalone scene-processor tests using mocked segmenter/matcher collaborators."""
 
+# TODO(tests): add/verify targeted coverage for prototype calculation and a real (not
+# mocked) SAM mask-polarity contract, since a prior mask-polarity inversion bug went
+# undetected without one (see TASKS.md's real-hardware debugging entry).
+
 from pathlib import Path
 from unittest.mock import Mock
 

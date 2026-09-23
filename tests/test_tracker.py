@@ -192,9 +192,13 @@ def test_stable_track_starts_moving_only_after_exiting_buffer() -> None:
     assert tracker._tracks[7].status is TrackStatus.STABLE
 
     exiting_detection = make_detection(box=(1, 0, 121, 240))
-    assert tracker.update([exiting_detection]) == []
+    signals = tracker.update([exiting_detection])
     active_track = tracker._tracks[7]
 
+    assert len(signals) == 1
+    assert signals[0].signal_type is TrackSignalType.MOVE_START
+    assert signals[0].track_id == 7
+    assert signals[0].detection is exiting_detection
     assert active_track.status is TrackStatus.MOVING
     assert active_track.movement_started_at == movement_started_at
     assert active_track.stable_box == detection.box
@@ -228,15 +232,20 @@ def test_moving_track_emits_one_timed_moved_signal_after_stopping() -> None:
     now[0] = 1.4001
     signals = tracker.update([destination_detection])
 
-    assert len(signals) == 1
-    assert signals[0].signal_type is TrackSignalType.MOVED
-    assert signals[0].started_at == movement_started_at
-    assert signals[0].finished_at == stopped_at
-    assert signals[0].source_box == source_detection.box
-    assert signals[0].destination_box == destination_detection.box
+    assert len(signals) == 2
+    assert signals[0].signal_type is TrackSignalType.MOVE_END
+    assert signals[0].track_id == 7
+    assert signals[0].detection is destination_detection
+    assert signals[1].signal_type is TrackSignalType.MOVED
+    assert signals[1].started_at == movement_started_at
+    assert signals[1].finished_at == stopped_at
+    assert signals[1].source_box == source_detection.box
+    assert signals[1].destination_box == destination_detection.box
     active_track = tracker._tracks[7]
     assert active_track.status is TrackStatus.STABLE
     assert active_track.stable_box == destination_detection.box
+    # No duplicate MOVE_END/MOVED on later frames once stable again.
+    assert tracker.update([destination_detection]) == []
     assert tracker.update([destination_detection]) == []
 
 
@@ -325,9 +334,50 @@ def test_moving_track_return_restarts_visible_stop_confirmation() -> None:
     now[0] = 3.0
     signals = tracker.update([moving_detection])
 
+    assert len(signals) == 2
+    assert signals[0].signal_type is TrackSignalType.MOVE_END
+    assert signals[1].signal_type is TrackSignalType.MOVED
+    assert signals[1].finished_at == resumed_stop_at
+
+
+def test_moving_track_does_not_repeat_move_start_while_still_moving() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(
+        candidate_confirmation_seconds=0.1,
+        clock=lambda: now[0],
+    )
+    detection = make_detection()
+    tracker.update([detection])
+    now[0] = 0.1
+    tracker.update([detection])
+
+    exiting_detection = make_detection(box=(1, 0, 121, 240))
+    signals = tracker.update([exiting_detection])
     assert len(signals) == 1
-    assert signals[0].signal_type is TrackSignalType.MOVED
-    assert signals[0].finished_at == resumed_stop_at
+    assert signals[0].signal_type is TrackSignalType.MOVE_START
+
+    # Still moving (displacement keeps resetting the stop attempt): no repeat signal.
+    assert tracker.update([make_detection(box=(30, 0, 150, 240))]) == []
+    assert tracker.update([make_detection(box=(60, 0, 180, 240))]) == []
+    assert tracker._tracks[7].status is TrackStatus.MOVING
+
+
+def test_stable_track_does_not_emit_move_end_without_prior_movement() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(
+        candidate_confirmation_seconds=0.1,
+        clock=lambda: now[0],
+    )
+    detection = make_detection()
+    tracker.update([detection])
+    now[0] = 0.1
+    tracker.update([detection])
+    assert tracker._tracks[7].status is TrackStatus.STABLE
+
+    # Remaining inside the buffer on many subsequent frames emits nothing.
+    for _ in range(5):
+        assert tracker.update([detection]) == []
+    assert tracker._tracks[7].status is TrackStatus.STABLE
 
 
 @pytest.mark.parametrize(

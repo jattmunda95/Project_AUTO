@@ -1,9 +1,46 @@
 background_color: [0, 0, 0]
 min_mask_pixels: 100
 
-# Reference-capture scheduling (identity coordinator)
-reference_target_count: 6
-capture_interval_seconds: 2.0
+# --- Reference capture (event-driven; see events/reference_policy.py) ---
+# Replaces the old continuous interval capture (reference_target_count /
+# capture_interval_seconds), which kept re-capturing a static item and filled the
+# gallery with near-identical views. A new item now takes a small baseline and
+# then learns only from movement, which is what produces genuinely new appearances.
+#
+# The identity resolve embedding is baseline reference 1 (already computed, so it
+# costs nothing extra); the remaining baseline reference follows after the spacing.
+initial_reference_count: 2
+initial_capture_spacing_frames: 15
+# After MOVE_START, wait this many frames before nominating the first candidate,
+# so the nominated frame shows actual displacement rather than the instant of onset.
+move_candidate_delay_frames: 5
+# Spacing between candidate nominations, including after a rejected candidate.
+candidate_retry_frames: 10
+# Budget per movement event, so one movement yields very few expensive attempts.
+max_movement_reference_attempts: 3
+# Hard ceiling on stored references per item.
+# TODO(gallery): at the cap V1 simply stops accepting references; a diversity-aware
+# replacement (evict the most redundant member to admit a new appearance) is future work.
+max_references_per_item: 8
+
+# Stage A cheap gate: applied on the video thread, only to nominated candidates.
+# Laplacian variance depends on crop size and texture, so this is a starting
+# estimate, not a calibrated value.
+min_reference_sharpness: 30.0
+# Fraction of the predicted (unclipped) detection box that lies inside the image.
+# Replaces the old edge_margin_pixels rule, which rejected any box touching the
+# boundary even when the object was almost entirely visible.
+min_reference_frame_visibility: 0.80
+
+# Stage B expensive gate: applied in the worker after SAM/DINO, for captures only,
+# so identity resolution still works on views too poor to learn from.
+min_mask_score: 0.60
+# Masked foreground pixels over segmented box area. A mask-sanity check, NOT
+# occlusion detection (see PreparedReference.mask_occupancy).
+min_mask_occupancy: 0.10
+# A candidate at or above this cosine similarity to an existing reference of the
+# same item adds no diversity and is rejected as redundant. Uncalibrated.
+reference_novelty_threshold: 0.93
 
 # Identification runs on a background worker now (see identification_worker.py),
 # so these no longer gate the camera loop directly; they size its bounded queue
@@ -20,6 +57,6 @@ bad_mask_cooldown_seconds: 5.0
 queue_full_retry_seconds: 0.5
 
 # Cheap pre-SAM checks applied before ever submitting a job to the worker.
+# Frame-edge handling now lives in min_reference_frame_visibility above.
 min_box_area: 400
 min_detector_confidence: 0.0
-edge_margin_pixels: 2
