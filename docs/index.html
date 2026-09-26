@@ -101,14 +101,25 @@ queue submission and polling are non-blocking. this does not make the whole fram
 ## identity decisions
 
 1. tracker add means temporally confirmed, not necessarily a new physical object.
-2. the coordinator rejects invalid, small, low-confidence, or edge-clipped candidates before submitting resolve work.
+2. the coordinator rejects invalid, small, low-confidence, or insufficiently visible candidates (frame-visibility ratio of the predicted box, not an edge-touch rule) before submitting resolve work.
 3. a copied frame and box enter the bounded job queue. referencemanager prevents overlapping jobs for a track while queued.
 4. sam2 segments the full frame using the box prompt. sceneprocessor extracts the box crop, retains true mask pixels, fills the background, and prepares an rgb image.
 5. dinov2 extracts a normalized cls-token embedding. matching shortlists items by prototype, then combines each shortlisted item&#x27;s top-k dino score with color/aspect scores when available and checks both score and runner-up margin thresholds.
 6. the worker returns new, existing, pending, or error. the main thread creates or associates the item and dispatches the appropriate event.
-7. a precomputed reference can be submitted for saving. further visible-frame captures are spaced by configuration; accepted saves refresh the worker&#x27;s gallery.
+7. a precomputed reference can be submitted for saving. further captures are event-driven, not interval-spaced: `referencepolicy` schedules a small baseline on item creation, then nothing further until `move_start`/`move_end` runtime transitions (see below) arm bounded candidate nomination; accepted saves refresh the worker&#x27;s gallery.
 
 the worker gallery includes all statuses for the configured model. the coordinator checks the current item status and active claims before accepting an existing-item result.
+
+## reference capture: sparse and movement-driven
+
+continuous/interval-based capture (a flat `capture_interval_seconds` re-capturing a static item indefinitely) has been replaced by `referencepolicy` (`events/reference_policy.py`), owned by the coordinator. states: `needs_initial -&gt; idle -&gt; armed -&gt; exhausted`.
+
+- **baseline**: on item creation, the identity-resolve embedding becomes baseline reference 1 at no extra cost; the policy schedules `initial_reference_count - 1` further baseline captures, then the track goes idle and captures nothing while static.
+- **movement-triggered**: `detectiontracker` emits explicit `move_start`/`move_end` signals on each stable&lt;-&gt;moving transition. these are runtime tracking transitions only — never persisted as `itemevent`s, never forwarded to `eventengine`. `move_start` arms up to `max_movement_reference_attempts` candidate nominations, spaced `candidate_retry_frames` apart; the budget is consumed at nomination time, not on result feedback, so in-flight async work cannot cause runaway re-nomination. `move_end` nominates exactly one final &quot;settled pose&quot; candidate, exempt from the attempt budget.
+- **two-stage gating**: stage a (cheap — crop validity, box area, detector confidence, frame visibility, sharpness) runs on the main thread before a job is ever queued, so sam/dino never run on every frame of a tracked object. stage b (expensive — sam mask score, mask occupancy, novelty against the item&#x27;s existing gallery) runs in the worker after sam/dino; baseline candidates are exempt from novelty gating (two similar baseline views are expected), movement/settled candidates are not. a rejected candidate returns before `add_reference_if_needed` and never updates the prototype.
+- `max_references_per_item` is a hard ceiling; new references are simply refused once reached (no replacement policy yet).
+
+verified only against 200 unit/integration tests using fakes and synthetic images; no live-camera run has occurred yet.
 
 ## architectural invariants and limits
 
@@ -119,6 +130,7 @@ the worker gallery includes all statuses for the configured model. the coordinat
 - removal releases the event engine&#x27;s track binding while preserving item history.
 - moved before identity resolution is currently dropped, not buffered or replayed.
 - results for inactive track ids are rejected. there is no generation token in job/result contracts, so protection against delayed results after numeric track-id reuse is not comprehensive.
+- move_start/move_end are runtime tracking transitions, never persisted itemevents and never routed through eventengine/decide_track_signal; only moved is the persisted &quot;meaningful location change&quot; semantic. a move_start/move_end pair can occur without a corresponding moved (e.g. an object nudged back to essentially the same spot).
 
 sources: [app](../src/project_auto/app.py), [coordinator](../src/project_auto/events/coordinator.py), [worker](../src/project_auto/events/identification_worker.py), [scene processing](../src/project_auto/perception/scene_processor.py).
 
@@ -146,7 +158,7 @@ all package paths below are relative to `src/project_auto`. modules separate cap
 | module | public types / operations | input and output |
 | --- | --- | --- |
 | [perception/detector.py](../src/project_auto/perception/detector.py) | detection, yolodetector.detect | bgr frame to class/confidence/xyxy box/optional temporary id; loads or exports openvino model; runs persistent bot-sort |
-| [perception/tracker.py](../src/project_auto/perception/tracker.py) | detectiontracker.update, tracksignal, trackstatus | detection list to immutable add/moved/remove signals; ignores detections without ids; maintains candidate, stable, moving, and missing lifecycle |
+| [perception/tracker.py](../src/project_auto/perception/tracker.py) | detectiontracker.update, tracksignal, trackstatus | detection list to immutable add/moved/remove/move_start/move_end signals (0-2 per track per frame); ignores detections without ids; maintains candidate, stable, moving, and missing lifecycle. move_start/move_end are runtime-only, never persisted |
 | [perception/segmenter.py](../src/project_auto/perception/segmenter.py) | segmenterconfig, samsegmenter.segment, segmentation | uint8 bgr frame plus integer boxes to frame-sized boolean masks and scores; true retains foreground; selects best finite nonempty mask |
 | [perception/scene_processor.py](../src/project_auto/perception/scene_processor.py) | sceneprocessor.prepare_reference/process, preparedreference, identitydecision | prepares masked rgb crop, normalized embedding, aspect ratio and foreground color histogram; proposes new/existing/pending; owns no scheduling or persistence |
 
@@ -156,10 +168,11 @@ tracker confirmation lasts two seconds with at most 15 cumulative candidate miss
 
 | module | main contracts | responsibility |
 | --- | --- | --- |
-| [events/coordinator.py](../src/project_auto/events/coordinator.py) | identitycoordinator.handle_frame/shutdown | applies results, submits resolve/capture jobs, schedules retries, routes lifecycle events, guards active claims |
-| [events/identification.py](../src/project_auto/events/identification.py) | identificationjob, identificationresult, identificationstate, referencemanager | immutable cross-thread message containers and per-track bookkeeping; queue eligibility and cooldowns |
-| [events/identification_worker.py](../src/project_auto/events/identification_worker.py) | identificationworkerprotocol, identificationworker.start/stop/submit/poll_results | one worker, bounded jobs, unbounded results, gallery snapshot, model work and reference persistence |
-| [events/event_engine.py](../src/project_auto/events/event_engine.py) | eventengine.process_signal/process_add/process_move/process_remove/process_return | resolves session track bindings and performs atomic lifecycle store operations; rejects conflicting claims |
+| [events/coordinator.py](../src/project_auto/events/coordinator.py) | identitycoordinator.handle_frame/shutdown | applies results, submits resolve/capture jobs, schedules retries, routes lifecycle events, guards active claims, drives referencepolicy from move_start/move_end |
+| [events/reference_policy.py](../src/project_auto/events/reference_policy.py) | referencepolicy, referencepolicystate, candidatekind, candidatedecision | sparse/event-driven reference-capture scheduling: baseline-then-idle for a static item, movement-triggered bounded candidate nomination. pure bookkeeping over caller-supplied frame numbers; no sam/dino/clock/persistence |
+| [events/identification.py](../src/project_auto/events/identification.py) | identificationjob, identificationresult, identificationstate, referencemanager | immutable cross-thread message containers (now carrying candidate_kind) and per-track bookkeeping; queue eligibility and cooldowns |
+| [events/identification_worker.py](../src/project_auto/events/identification_worker.py) | identificationworkerprotocol, identificationworker.start/stop/submit/poll_results | one worker, bounded jobs, unbounded results, gallery snapshot, model work, the expensive reference-quality/novelty gate, and reference persistence |
+| [events/event_engine.py](../src/project_auto/events/event_engine.py) | eventengine.process_signal/process_add/process_move/process_remove/process_return | resolves session track bindings and performs atomic lifecycle store operations; rejects conflicting claims; move_start/move_end are never routed here |
 
 worker exceptions during a job become error results with logged diagnostics. initial gallery loading occurs before the per-job exception wrapper; startup/schema failures can therefore stop the worker rather than becoming a normal per-track retry.
 
@@ -177,6 +190,8 @@ worker exceptions during a job become error results with logged diagnostics. ini
 
 [perception/descriptors.py](../src/project_auto/perception/descriptors.py) implements pure supplementary descriptors. aspect ratio is max(width/height, height/width), so a 90-degree box rotation has the same ratio; it is not absolute size. foreground rgb pixels produce a normalized 32 x 32 hue/saturation histogram before background replacement. color similarity is 1 minus bhattacharyya distance; aspect similarity uses gaussian falloff with sigma 0.25. these descriptors are now wired through preparation, worker saves, gallery loading, and matching. calibration/held-out accuracy remains unverified.
 
+also in `descriptors.py`: `sharpness()` (laplacian variance, measures only, no built-in threshold) and `frame_visibility_ratio()`/`clip_box_to_frame()` (visible fraction of a *predicted*, unclipped box against the image bounds — the predicted box is never overwritten by its clipped version before measuring). both are cheap, main-thread-safe geometry/pixel operations used by the reference-capture stage a gate; neither invokes sam or dino.
+
 the matcher first shortlists by dino prototypes. it averages top-k scores separately for dino, valid color references, and valid aspect references. with both supplementary scores available, final score = 0.65 * dino + 0.20 * color + 0.15 * aspect; otherwise it falls back to dino alone. acceptance requires the configured score threshold and best-minus-runner-up margin; a single candidate has no margin competitor. optional csv output records diagnostic match scores. margin rejection currently yields no accepted identity, which sceneprocessor interprets as new; an ambiguity/confirmation flow is still deferred.
 
 | path | status | usage |
@@ -184,7 +199,7 @@ the matcher first shortlists by dino prototypes. it averages top-k scores separa
 | [memory/regions.py](../src/project_auto/memory/regions.py) | implemented, pure geometry | regiongeometry, validate_polygon, polygon_area, point_in_polygon, resolve_region, box_area_fraction; no sql/session imports |
 | [scripts/define_regions.py](../scripts/define_regions.py) | thin wrapper | delegates to region_calibration.run_calibration |
 | [display/viewer.py](../src/project_auto/display/viewer.py) | empty | actual display currently lives in app.py |
-| [utils/logging.py](../src/project_auto/utils/logging.py) | empty | no centralized logging setup; runtime mixes print and logging |
+| [utils/logging.py](../src/project_auto/utils/logging.py) | implemented | `log_action(category, **fields)`: fixed action taxonomy (event/new/match/assoc/ambig/reject/defer/capture/queue/error/region/system), one ascii-sigil/ansi-color line per action, emitted once by the layer that owns the data. still print()-based, not the stdlib logging module |
 | [scripts/run_camera.py](../scripts/run_camera.py) | implemented wrapper | calls the main application |
 | [scripts/run_video.py](../scripts/run_video.py) | empty | no video-file execution path provided here |
 | [scripts/benchmark_local.py](../scripts/benchmark_local.py) | empty | no benchmark implementation |
@@ -359,7 +374,7 @@ values below are the working-tree yaml settings inspected for this documentation
 | removal_timeout_seconds | 2.0 | confirmed-track absence before remove |
 | movement_buffer_scale | 1.2 | centered stable placement buffer scale |
 | movement_stop_tolerance_pixels | 5.0 | allowed center displacement during stop confirmation |
-| movement_stopped_confirmation_seconds | 1.0 | visible stopped duration before moved |
+| movement_stopped_confirmation_seconds | 1.0 | visible stopped duration before moved (and the runtime-only move_end, fired the same frame) |
 
 bot-sort&#x27;s `botsort.yaml` name and `persist=true` are selected in detector code rather than these project yaml files. agnostic_nms is not passed explicitly; the installed ultralytics default inspected in .venv/lib/site-packages/ultralytics/cfg/default.yaml is false (class-aware nms). this is an installed-library default, not a pinned project setting.
 
@@ -385,16 +400,31 @@ small galleries bypass prototype ranking; a nonpositive shortlist setting also b
 | --- | --- | --- |
 | background_color | [0, 0, 0] | rgb background replacement |
 | min_mask_pixels | 100 | minimum retained mask pixels inside the crop |
-| reference_target_count | 6 | maximum accepted references per item/model via guarded worker saves |
-| capture_interval_seconds | 2.0 | nominal spacing after successful capture result application |
 | job_queue_max_size | 8 | waiting-job capacity, excluding the executing job; keep positive |
 | bad_mask_cooldown_seconds | 5.0 | resolve retry delay after bad views, errors, or claimed-item conflicts |
 | queue_full_retry_seconds | 0.5 | resolve retry delay after full queue |
 | min_box_area | 400 | resolve prefilter minimum box area in square pixels |
 | min_detector_confidence | 0.0 | additional resolve filter; detector still uses 0.18 |
-| edge_margin_pixels | 2 | resolve candidates touching this frame-edge margin are rejected |
 
-these filters and cooldowns are not universal capture guarantees. the additional-reference path does not apply the same prefilter or all the same retry cooldowns. it can continue performing preparation after the database reference cap has been reached; the store rejects extra saves. see [performance caveats](07-performance.md).
+### reference capture (event-driven; `events/reference_policy.py`)
+
+replaces the earlier continuous `reference_target_count`/`capture_interval_seconds`/`edge_margin_pixels` interval scheme, which kept re-capturing a static item and filled the gallery with near-identical views.
+
+| key | current value | interpretation |
+| --- | --- | --- |
+| initial_reference_count | 2 | baseline references per new item; the resolve embedding is reference 1 at no extra cost |
+| initial_capture_spacing_frames | 15 | frames to wait before the remaining baseline capture(s) |
+| move_candidate_delay_frames | 5 | frames to wait after move_start before the first movement candidate |
+| candidate_retry_frames | 10 | spacing between candidate nominations, including after a rejected one |
+| max_movement_reference_attempts | 3 | attempt budget per movement event; consumed at nomination, not on result |
+| max_references_per_item | 8 | hard ceiling; new references are refused once reached, no replacement policy yet |
+| min_reference_sharpness | 30.0 | stage a cheap gate: laplacian-variance threshold; uncalibrated |
+| min_reference_frame_visibility | 0.80 | stage a cheap gate: visible fraction of the *predicted* (unclipped) box; replaces the old edge-touch rejection |
+| min_mask_score | 0.60 | stage b expensive gate (worker, after sam): uncalibrated |
+| min_mask_occupancy | 0.10 | stage b expensive gate: masked pixels / segmented box area; a mask-sanity check, not occlusion detection |
+| reference_novelty_threshold | 0.93 | stage b: candidate similarity to an existing reference at or above this is rejected as redundant; baseline candidates are exempt |
+
+these filters and cooldowns are not universal capture guarantees. stage a runs on the main thread for nominated candidates only (never every frame); stage b runs in the worker after sam/dino, and a rejection there never updates the item&#x27;s stored prototype. none of these five thresholds have been calibrated against real data yet — see [performance caveats](07-performance.md) and tasks.md.
 
 sources: [camera settings](../configs/camera.yaml), [perception settings](../configs/perception.yaml), [database settings](../configs/table.yaml), [sam2 settings](../configs/segmenter.yaml), [reid settings](../configs/reid.yaml), [scene settings](../configs/scene_processor.yaml).
 
@@ -482,14 +512,16 @@ these are operating assumptions, not validated guarantees for every deployment.
 
 | limitation | impact | follow-up direction |
 | --- | --- | --- |
-| reid threshold is provisional | recognition quality at decision margins is unknown | empirical same/different-item calibration and held-out evaluation |
+| reid threshold is provisional | recognition quality at decision margins is unknown | empirical same/different-item calibration and held-out evaluation; blocked on adding a ground-truth label to reid_match_log.csv |
+| reference-capture quality/novelty thresholds are provisional | min_reference_sharpness, min_mask_score, min_mask_occupancy, reference_novelty_threshold are uncalibrated starting estimates | run against a live camera and tune from the capture/reject action-classified logs |
+| reference capture v2 is untested on live hardware | sparse/event-driven capture behavior (baseline stop, move_start/move_end nomination) is verified only by fakes/synthetic images | run project-auto against a real camera and confirm the documented lifecycle |
 | movement before identity is dropped | event history can omit an early movement | define buffering/reconciliation policy |
 | delayed results have no track generation token | numeric id reuse can defeat active-id checks | add generation-aware correlation and tests |
 | initial identity and first reference are separate transactions/jobs | newly created items may briefly lack matchable references | review consistency and failure recovery |
-| capture scheduling continues beyond save cap | avoidable inference load | stop scheduling at target and apply capture cooldowns |
+| reference gallery has no replacement policy at its cap | max_references_per_item simply refuses new references once reached | add diversity-aware replacement (evict most redundant member) |
+| mask_occupancy is a sanity check, not occlusion detection | cannot distinguish a physically small object from a partially hidden one | add true partial-occlusion reasoning with better evidence |
 | occlusion lifecycle is incomplete | long occlusion can look like removal | define visibility/occlusion policy |
 | migration system is absent | older databases require deliberate migration | version schema and preserve existing history |
-| debug display/logging only | limited operational observability | structured logging and lifecycle/identity display |
 | no complete measured benchmark | capacity and latency cannot be promised | implement the performance protocol |
 
 ## out of scope for the current implementation
@@ -601,7 +633,9 @@ if a database was deliberately reset, normal startup creates fresh tables when t
 
 ## verification boundaries
 
-this documentation reflects source/yaml review on 14 september 2026. the earlier region implementation run in this chat passed 160 tests (130 existing tests plus 30 geometry, spatial memory and ui checks). that is recorded implementation evidence, not a fresh test execution during this documentation-only refresh or a guarantee of live hardware behavior.
+this documentation reflects source/yaml review through 23 september 2026 (reference capture v2, action-classified logging). the 23 september implementation run passed 200 tests (34 new: reference-policy state machine and descriptor/geometry coverage, plus updated coordinator/tracker/worker tests). that is recorded implementation evidence, not a guarantee of live hardware behavior — reference capture v2 has not yet run against a real camera. the earlier region implementation run passed 160 tests; both counts are historical run evidence, not a claim about the current total.
+
+`pytest` was not previously installed in `.venv`; it has since been installed. on windows with the project checked out under a onedrive-synced path, `pytest`&#x27;s default `tmp_path` fixture can hit `permissionerror` against the onedrive temp-sync lock (the same class of issue as the sqlite `database is locked` investigation); pass `--basetemp` pointed at a plain local writable directory to avoid it.
 
 the working tree contains uncommitted application/configuration and documentation changes. weighted descriptor scoring and region integration are present in the inspected source; no held-out recognition calibration or throughput measurement is claimed. geometry and gui interaction tests use isolated databases and simulated camera/input. ruff was unavailable during implementation. the earlier manual schema validation passed data and query checks on a copy, then encountered temporary-file cleanup trouble; no live database migration is claimed. recovery/reset provenance is still to confirm.
 
@@ -619,9 +653,11 @@ the documentation build/link checks validate navigation, anchors, and generated 
 | [test_memory_database.py](../tests/test_memory_database.py) | schema and persistent-memory behavior |
 | [test_reid.py](../tests/test_reid.py) | synthetic embedding matching and prototype shortlist behavior |
 | [test_scene_processor.py](../tests/test_scene_processor.py) | crop/mask preparation and identity proposals |
+| [test_descriptors.py](../tests/test_descriptors.py) | frame-visibility geometry (predicted vs. clipped box) and laplacian sharpness |
+| [test_reference_policy.py](../tests/test_reference_policy.py) | referencepolicy state machine: baseline scheduling, move_start/move_end nomination, attempt budgets, retry spacing |
 | [test_identification.py](../tests/test_identification.py) | referencemanager queue/cooldown state |
-| [test_identification_worker.py](../tests/test_identification_worker.py) | worker jobs, results, queue behavior, shutdown |
-| [test_coordinator.py](../tests/test_coordinator.py) | async submission, result application, retirement and binding scenarios |
+| [test_identification_worker.py](../tests/test_identification_worker.py) | worker jobs, results, queue behavior, shutdown, the reference-quality/novelty gate |
+| [test_coordinator.py](../tests/test_coordinator.py) | async submission, result application, retirement and binding scenarios, event-driven reference-capture nomination |
 | [test_regions.py](../tests/test_regions.py) | shoelace area, concave/edge inclusion, centroid overlap resolution, validation and normalized areas |
 | [test_region_memory.py](../tests/test_region_memory.py) | add/moved/removed/returned spatial persistence, rollback, deletion/snapshots, fallback, query semantics and no query writes |
 | [test_region_ui.py](../tests/test_region_ui.py) | drawing copies/blending, terminal queries, simulated polygon clicks/undo/save |

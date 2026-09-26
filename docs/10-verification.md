@@ -2,7 +2,9 @@
 
 ## Verification boundaries
 
-This documentation reflects source/YAML review on 14 September 2026. The earlier region implementation run in this chat passed 160 tests (130 existing tests plus 30 geometry, spatial memory and UI checks). That is recorded implementation evidence, not a fresh test execution during this documentation-only refresh or a guarantee of live hardware behavior.
+This documentation reflects source/YAML review through 23 September 2026 (Reference Capture V2, action-classified logging). The 23 September implementation run passed 200 tests (34 new: reference-policy state machine and descriptor/geometry coverage, plus updated coordinator/tracker/worker tests). That is recorded implementation evidence, not a guarantee of live hardware behavior — Reference Capture V2 has not yet run against a real camera. The earlier region implementation run passed 160 tests; both counts are historical run evidence, not a claim about the current total.
+
+`pytest` was not previously installed in `.venv`; it has since been installed. On Windows with the project checked out under a OneDrive-synced path, `pytest`'s default `tmp_path` fixture can hit `PermissionError` against the OneDrive temp-sync lock (the same class of issue as the SQLite `database is locked` investigation); pass `--basetemp` pointed at a plain local writable directory to avoid it.
 
 The working tree contains uncommitted application/configuration and documentation changes. Weighted descriptor scoring and region integration are present in the inspected source; no held-out recognition calibration or throughput measurement is claimed. Geometry and GUI interaction tests use isolated databases and simulated camera/input. Ruff was unavailable during implementation. The earlier manual schema validation passed data and query checks on a copy, then encountered temporary-file cleanup trouble; no live database migration is claimed. Recovery/reset provenance is still to confirm.
 
@@ -20,9 +22,11 @@ The documentation build/link checks validate navigation, anchors, and generated 
 | [test_memory_database.py](../tests/test_memory_database.py) | Schema and persistent-memory behavior |
 | [test_reid.py](../tests/test_reid.py) | Synthetic embedding matching and prototype shortlist behavior |
 | [test_scene_processor.py](../tests/test_scene_processor.py) | Crop/mask preparation and identity proposals |
+| [test_descriptors.py](../tests/test_descriptors.py) | Frame-visibility geometry (predicted vs. clipped box) and Laplacian sharpness |
+| [test_reference_policy.py](../tests/test_reference_policy.py) | ReferencePolicy state machine: baseline scheduling, MOVE_START/MOVE_END nomination, attempt budgets, retry spacing |
 | [test_identification.py](../tests/test_identification.py) | ReferenceManager queue/cooldown state |
-| [test_identification_worker.py](../tests/test_identification_worker.py) | Worker jobs, results, queue behavior, shutdown |
-| [test_coordinator.py](../tests/test_coordinator.py) | Async submission, result application, retirement and binding scenarios |
+| [test_identification_worker.py](../tests/test_identification_worker.py) | Worker jobs, results, queue behavior, shutdown, the reference-quality/novelty gate |
+| [test_coordinator.py](../tests/test_coordinator.py) | Async submission, result application, retirement and binding scenarios, event-driven reference-capture nomination |
 | [test_regions.py](../tests/test_regions.py) | Shoelace area, concave/edge inclusion, centroid overlap resolution, validation and normalized areas |
 | [test_region_memory.py](../tests/test_region_memory.py) | ADD/MOVED/REMOVED/RETURNED spatial persistence, rollback, deletion/snapshots, fallback, query semantics and no query writes |
 | [test_region_ui.py](../tests/test_region_ui.py) | Drawing copies/blending, terminal queries, simulated polygon clicks/undo/save |

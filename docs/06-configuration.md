@@ -28,7 +28,7 @@ Values below are the working-tree YAML settings inspected for this documentation
 | removal_timeout_seconds | 2.0 | Confirmed-track absence before REMOVE |
 | movement_buffer_scale | 1.2 | Centered stable placement buffer scale |
 | movement_stop_tolerance_pixels | 5.0 | Allowed center displacement during stop confirmation |
-| movement_stopped_confirmation_seconds | 1.0 | Visible stopped duration before MOVED |
+| movement_stopped_confirmation_seconds | 1.0 | Visible stopped duration before MOVED (and the runtime-only MOVE_END, fired the same frame) |
 
 BoT-SORT's `botsort.yaml` name and `persist=True` are selected in detector code rather than these project YAML files. agnostic_nms is not passed explicitly; the installed Ultralytics default inspected in .venv/Lib/site-packages/ultralytics/cfg/default.yaml is False (class-aware NMS). This is an installed-library default, not a pinned project setting.
 
@@ -54,16 +54,31 @@ Small galleries bypass prototype ranking; a nonpositive shortlist setting also b
 | --- | --- | --- |
 | background_color | [0, 0, 0] | RGB background replacement |
 | min_mask_pixels | 100 | Minimum retained mask pixels inside the crop |
-| reference_target_count | 6 | Maximum accepted references per item/model via guarded worker saves |
-| capture_interval_seconds | 2.0 | Nominal spacing after successful capture result application |
 | job_queue_max_size | 8 | Waiting-job capacity, excluding the executing job; keep positive |
 | bad_mask_cooldown_seconds | 5.0 | Resolve retry delay after bad views, errors, or claimed-item conflicts |
 | queue_full_retry_seconds | 0.5 | Resolve retry delay after full queue |
 | min_box_area | 400 | Resolve prefilter minimum box area in square pixels |
 | min_detector_confidence | 0.0 | Additional resolve filter; detector still uses 0.18 |
-| edge_margin_pixels | 2 | Resolve candidates touching this frame-edge margin are rejected |
 
-These filters and cooldowns are not universal capture guarantees. The additional-reference path does not apply the same prefilter or all the same retry cooldowns. It can continue performing preparation after the database reference cap has been reached; the store rejects extra saves. See [performance caveats](07-performance.md).
+### Reference capture (event-driven; `events/reference_policy.py`)
+
+Replaces the earlier continuous `reference_target_count`/`capture_interval_seconds`/`edge_margin_pixels` interval scheme, which kept re-capturing a static item and filled the gallery with near-identical views.
+
+| Key | Current value | Interpretation |
+| --- | --- | --- |
+| initial_reference_count | 2 | Baseline references per new item; the resolve embedding is reference 1 at no extra cost |
+| initial_capture_spacing_frames | 15 | Frames to wait before the remaining baseline capture(s) |
+| move_candidate_delay_frames | 5 | Frames to wait after MOVE_START before the first movement candidate |
+| candidate_retry_frames | 10 | Spacing between candidate nominations, including after a rejected one |
+| max_movement_reference_attempts | 3 | Attempt budget per movement event; consumed at nomination, not on result |
+| max_references_per_item | 8 | Hard ceiling; new references are refused once reached, no replacement policy yet |
+| min_reference_sharpness | 30.0 | Stage A cheap gate: Laplacian-variance threshold; uncalibrated |
+| min_reference_frame_visibility | 0.80 | Stage A cheap gate: visible fraction of the *predicted* (unclipped) box; replaces the old edge-touch rejection |
+| min_mask_score | 0.60 | Stage B expensive gate (worker, after SAM): uncalibrated |
+| min_mask_occupancy | 0.10 | Stage B expensive gate: masked pixels / segmented box area; a mask-sanity check, not occlusion detection |
+| reference_novelty_threshold | 0.93 | Stage B: candidate similarity to an existing reference at or above this is rejected as redundant; baseline candidates are exempt |
+
+These filters and cooldowns are not universal capture guarantees. Stage A runs on the main thread for nominated candidates only (never every frame); Stage B runs in the worker after SAM/DINO, and a rejection there never updates the item's stored prototype. None of these five thresholds have been calibrated against real data yet — see [performance caveats](07-performance.md) and TASKS.md.
 
 Sources: [camera settings](../configs/camera.yaml), [perception settings](../configs/perception.yaml), [database settings](../configs/table.yaml), [SAM2 settings](../configs/segmenter.yaml), [ReID settings](../configs/reid.yaml), [scene settings](../configs/scene_processor.yaml).
 

@@ -578,3 +578,60 @@ def test_moved_signal_after_identity_resolves_is_recorded_normally(
     coordinator.handle_frame(frame(), [moved_signal(7)], {7: make_detection(7)})
 
     assert store.get_item_history(item_id)[-1].event_type.value == "moved"
+
+
+def test_resolve_jobs_carry_query_id_detection_and_frame_index_when_diagnostics_are_on(
+    coordinator: IdentityCoordinator, worker: FakeWorker
+) -> None:
+    diagnostics = Mock()
+    diagnostics.new_query_id.return_value = "run-q00001"
+    coordinator.diagnostics = diagnostics
+
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    job = worker.submitted[0]
+    assert job.query_id == "run-q00001"
+    assert job.frame_index == 1
+    assert job.detection is not None and job.detection.track_id == 7
+
+
+def test_resolve_jobs_have_no_query_id_when_diagnostics_are_off(
+    coordinator: IdentityCoordinator, worker: FakeWorker
+) -> None:
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    assert worker.submitted[0].query_id is None
+
+
+def test_applied_outcomes_are_recorded_against_their_query(
+    coordinator: IdentityCoordinator, worker: FakeWorker, store: DatabaseStore
+) -> None:
+    diagnostics = Mock()
+    coordinator.diagnostics = diagnostics
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    worker.push_result(
+        IdentificationResult(
+            kind="resolve", track_id=7, status="new", reference=reference(), query_id="q1"
+        )
+    )
+    coordinator.handle_frame(frame(), [], {})
+    item_id = store.list_present_items()[0].id
+    coordinator.handle_frame(frame(), [remove_signal(7)], {})
+
+    coordinator.handle_frame(frame(), [add_signal(8)], {})
+    worker.push_result(
+        IdentificationResult(
+            kind="resolve", track_id=8, status="existing", item_id=item_id, query_id="q2"
+        )
+    )
+    coordinator.handle_frame(frame(), [], {})
+
+    worker.push_result(IdentificationResult(kind="resolve", track_id=99, status="new", query_id="q3"))
+    coordinator.handle_frame(frame(), [], {})
+
+    assert [call.args for call in diagnostics.record_outcome.call_args_list] == [
+        ("q1", item_id, "ADDED"),
+        ("q2", item_id, "RETURNED"),
+        ("q3", None, "STALE"),
+    ]

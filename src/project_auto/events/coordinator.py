@@ -59,6 +59,7 @@ from project_auto.perception.detector import Detection
 from project_auto.perception.scene_processor import PreparedReference, SceneProcessor
 from project_auto.perception.tracker import TrackSignal, TrackSignalType
 from project_auto.utils.logging import Category, log_action
+from project_auto.utils.reid_diagnostics import ReidDiagnostics
 
 
 @dataclass(slots=True)
@@ -88,6 +89,8 @@ class IdentityCoordinator:
     min_mask_occupancy: float = 0.0
     reference_novelty_threshold: float = 1.0
     job_queue_max_size: int = 8
+    # Optional ground-truth diagnostics for resolve jobs; None disables recording.
+    diagnostics: ReidDiagnostics | None = None
     clock: Callable[[], float] = field(default=monotonic, repr=False)
     worker: IdentificationWorkerProtocol | None = None
     reference_policy: ReferencePolicy = field(init=False, repr=False)
@@ -118,6 +121,7 @@ class IdentityCoordinator:
                 min_mask_score=self.min_mask_score,
                 min_mask_occupancy=self.min_mask_occupancy,
                 reference_novelty_threshold=self.reference_novelty_threshold,
+                diagnostics=self.diagnostics,
             )
         self.worker.start()
 
@@ -260,7 +264,13 @@ class IdentityCoordinator:
             return
 
         job = IdentificationJob(
-            kind="resolve", track_id=track_id, frame=frame.copy(), box=detection.box
+            kind="resolve",
+            track_id=track_id,
+            frame=frame.copy(),
+            box=detection.box,
+            detection=detection,
+            query_id=self.diagnostics.new_query_id() if self.diagnostics is not None else None,
+            frame_index=self._frame_index,
         )
         if self.worker.submit(job):
             self._reference_manager.mark_queued(track_id)
@@ -338,6 +348,7 @@ class IdentityCoordinator:
                     kind=result.kind,
                     status=result.status,
                 )
+                self._record_outcome(result, None, "STALE")
                 self._reference_manager.forget(result.track_id)
                 continue
 
@@ -346,11 +357,18 @@ class IdentityCoordinator:
             else:
                 self._apply_capture_result(result)
 
+    def _record_outcome(self, result: IdentificationResult, item_id: int | None, event: str) -> None:
+        """Record what this thread did with one resolve result, if diagnostics are on."""
+        if self.diagnostics is None or result.kind != "resolve" or result.query_id is None:
+            return
+        self.diagnostics.record_outcome(result.query_id, item_id, event)
+
     def _apply_resolve_result(self, result: IdentificationResult) -> None:
         track_id = result.track_id
         now = self.clock()
 
         if result.status in ("pending", "error"):
+            self._record_outcome(result, None, "ERROR" if result.status == "error" else "DEFER")
             log_action(
                 Category.DEFER,
                 track=track_id,
@@ -365,6 +383,7 @@ class IdentityCoordinator:
         detection = self._last_detection_by_track.get(track_id)
         if detection is None:
             # The track vanished between submission and this result; nothing to bind.
+            self._record_outcome(result, None, "DROPPED")
             self._reference_manager.forget(track_id)
             return
 
@@ -375,6 +394,7 @@ class IdentityCoordinator:
                 signal_type=TrackSignalType.ADD, track_id=track_id, detection=detection
             )
             item, _ = self.event_engine.process_signal(add_signal)
+            self._record_outcome(result, item.id, "ADDED")
             self._reference_manager.mark_identified(track_id)
             # This resolve embedding becomes baseline reference 1 at no extra cost;
             # the policy schedules whatever baseline references still remain.
@@ -391,6 +411,7 @@ class IdentityCoordinator:
         if self.event_engine.is_item_claimed(item_id, excluding_track_id=track_id):
             # Another visible track already owns this item; keep retrying instead.
             log_action(Category.DEFER, track=track_id, item=item_id, reason="item_already_claimed")
+            self._record_outcome(result, item_id, "DEFER_CLAIMED")
             self._reference_manager.mark_deferred(
                 track_id, now, self.bad_mask_cooldown_seconds, "item_already_claimed"
             )
@@ -408,8 +429,10 @@ class IdentityCoordinator:
                 item_id=item_id,
             )
             self.event_engine.process_return(return_signal)
+            self._record_outcome(result, item_id, "RETURNED")
         else:
             self.event_engine.associate_existing_item(track_id, item_id)
+            self._record_outcome(result, item_id, "ASSOC")
 
         self._reference_manager.mark_identified(track_id)
         # An already-known item keeps its existing baseline and learns only from

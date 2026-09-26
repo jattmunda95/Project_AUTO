@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from project_auto.memory.reid import GalleryEntry, ReidMatch
+from project_auto.memory.reid import CandidateScore, GalleryEntry, ReidMatch
 from project_auto.perception.scene_processor import (
     IdentityDecision,
     SceneProcessor,
@@ -108,7 +108,25 @@ def test_process_returns_pending_without_matching_when_unusable(
     result = processor.process(frame, (0, 0, 4, 4), source_track_id=7, gallery=[])
 
     assert result == IdentityDecision("pending", 7, None, 0.0, None)
+    assert result.reason == "no_mask"
     matcher.match_candidate.assert_not_called()
+
+
+def test_process_passes_match_candidates_and_reason_through(
+    processor: SceneProcessor, segmenter: Mock, matcher: Mock, frame: np.ndarray
+) -> None:
+    box = (0, 0, 4, 4)
+    segmenter.segment.return_value = [Segmentation(box, full_mask(box, frame.shape[:2]), 0.9)]
+    candidates = (CandidateScore(42, 0.6, 0.6, None, None, 1),)
+    matcher.match_candidate.return_value = ReidMatch(
+        None, 0.6, False, candidates=candidates, decision_reason="low_margin"
+    )
+
+    result = processor.process(frame, box, source_track_id=3, gallery=[])
+
+    assert result.decision == "new"
+    assert result.candidates == candidates
+    assert result.reason == "low_margin"
 
 
 def test_process_returns_existing_on_accepted_match(

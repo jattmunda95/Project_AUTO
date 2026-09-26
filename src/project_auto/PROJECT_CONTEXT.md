@@ -1,6 +1,6 @@
 # Project AUTO Context
 
-Source-reviewed architecture handoff: 14 September 2026. Detailed contracts live in the [modular docs](../../docs/README.md), especially [architecture](../../docs/02-architecture.md), [data](../../docs/05-data.md), and [regions](../../docs/11-regions.md). TASKS holds current priorities and historical verification.
+Source-reviewed architecture handoff: 23 September 2026 (Reference Capture V2 and action-classified logging). Detailed contracts live in the [modular docs](../../docs/README.md), especially [architecture](../../docs/02-architecture.md), [data](../../docs/05-data.md), and [regions](../../docs/11-regions.md). TASKS holds current priorities and historical verification.
 
 ## Purpose and architecture
 
@@ -25,11 +25,15 @@ SAM/DINO matching and reference saves run on one background worker. The coordina
 
 ## Tracking and identity
 
-Candidate confirmation takes two seconds with at most 15 cumulative missing frames per attempt; the 16th miss retires that attempt. Stable placement uses a 1.2x centered buffer. After leaving it, a centroid must remain within five pixels for one visible second before MOVED. Stable or moving tracks absent for two seconds emit REMOVE. Only detections with temporary track IDs enter this lifecycle.
+Candidate confirmation takes two seconds with at most 15 cumulative missing frames per attempt; the 16th miss retires that attempt. Stable placement uses a 1.2x centered buffer. Exiting it emits a runtime-only `MOVE_START` signal (arms reference capture, see below; never persisted). A centroid must then remain within five pixels for one visible second before `MOVE_END` (also runtime-only) fires together with the persisted `MOVED` event in the same frame. Stable or moving tracks absent for two seconds emit REMOVE. Only detections with temporary track IDs enter this lifecycle.
 
 ADD is temporal confirmation, not proof of new identity. The coordinator submits a quality-prefiltered resolve job. SceneProcessor retains True foreground SAM pixels, computes descriptors before background replacement, and prepares the RGB crop and normalized DINO embedding. NEW creates an Item/ADDED; a matched removed item produces RETURNED; a matched PRESENT/OCCLUDED item associates without an event. Removal releases the track binding after persistence. Unusable views defer; unresolved MOVED signals are currently dropped rather than replayed.
 
-ReferenceManager limits outstanding work per track and applies resolve cooldowns: five seconds for unusable/conflicting views and 0.5 seconds for full queues. The worker owns the gallery snapshot and refreshes it after accepted reference saves. Six references per item/model is a save target, not an identity prerequisite; nominal spacing is two seconds. The capture path can still schedule inference after the save cap and does not have every resolve cooldown protection.
+ReferenceManager limits outstanding work per track and applies resolve cooldowns: five seconds for unusable/conflicting views and 0.5 seconds for full queues. The worker owns the gallery snapshot and refreshes it after accepted reference saves.
+
+Reference capture is sparse and event-driven (`ReferencePolicy`, `events/reference_policy.py`), not continuous/interval-based. A new item captures `initial_reference_count` (2) baseline references — the identity-resolve embedding is baseline reference 1 at no extra cost — then captures nothing further while it stays static; a still object earning no new references is intentional, not a bug. `DetectionTracker` emits runtime-only `MOVE_START`/`MOVE_END` signals (never persisted as ItemEvents, never forwarded to EventEngine) on each STABLE<->MOVING transition; `MOVE_START` arms up to `max_movement_reference_attempts` bounded candidate nominations spaced `candidate_retry_frames` apart, and `MOVE_END` nominates exactly one final settled-pose candidate exempt from that budget. Candidate evaluation is two-staged: a cheap Stage A gate (crop validity, box area, confidence, frame visibility, sharpness) runs on the main thread before a job is ever queued; an expensive Stage B gate (SAM mask score, mask occupancy, novelty against the existing gallery) runs in the worker after SAM/DINO, and a rejected candidate never reaches `add_reference_if_needed` or updates the prototype. `max_references_per_item` (8) is a hard ceiling with no replacement policy yet (`TODO(gallery)`). `mask_occupancy` is a mask-sanity measure, explicitly not occlusion detection (`TODO(occlusion)`). All of this is unit/integration tested (200 tests) but unverified against a live camera.
+
+Diagnostic output is action-classified (`utils/logging.py::log_action()`: `EVENT`, `NEW`, `MATCH`, `ASSOC`, `AMBIG`, `REJECT`, `DEFER`, `CAPTURE`, `QUEUE`, `ERROR`, `REGION`, `SYSTEM`), each logged exactly once by the layer that owns its data, replacing the earlier per-file `[Coordinator]`/`[SceneProcessor]`/`[ReID]` prints that echoed one action through multiple lines.
 
 ## Matching contract
 

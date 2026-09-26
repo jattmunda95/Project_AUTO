@@ -24,14 +24,16 @@ These are operating assumptions, not validated guarantees for every deployment.
 
 | Limitation | Impact | Follow-up direction |
 | --- | --- | --- |
-| ReID threshold is provisional | Recognition quality at decision margins is unknown | Empirical same/different-item calibration and held-out evaluation |
+| ReID threshold is provisional | Recognition quality at decision margins is unknown | Empirical same/different-item calibration and held-out evaluation; blocked on adding a ground-truth label to reid_match_log.csv |
+| Reference-capture quality/novelty thresholds are provisional | min_reference_sharpness, min_mask_score, min_mask_occupancy, reference_novelty_threshold are uncalibrated starting estimates | Run against a live camera and tune from the CAPTURE/REJECT action-classified logs |
+| Reference Capture V2 is untested on live hardware | Sparse/event-driven capture behavior (baseline stop, MOVE_START/MOVE_END nomination) is verified only by fakes/synthetic images | Run project-auto against a real camera and confirm the documented lifecycle |
 | Movement before identity is dropped | Event history can omit an early movement | Define buffering/reconciliation policy |
 | Delayed results have no track generation token | Numeric ID reuse can defeat active-ID checks | Add generation-aware correlation and tests |
 | Initial identity and first reference are separate transactions/jobs | Newly created items may briefly lack matchable references | Review consistency and failure recovery |
-| Capture scheduling continues beyond save cap | Avoidable inference load | Stop scheduling at target and apply capture cooldowns |
+| Reference gallery has no replacement policy at its cap | max_references_per_item simply refuses new references once reached | Add diversity-aware replacement (evict most redundant member) |
+| mask_occupancy is a sanity check, not occlusion detection | Cannot distinguish a physically small object from a partially hidden one | Add true partial-occlusion reasoning with better evidence |
 | Occlusion lifecycle is incomplete | Long occlusion can look like removal | Define visibility/occlusion policy |
 | Migration system is absent | Older databases require deliberate migration | Version schema and preserve existing history |
-| Debug display/logging only | Limited operational observability | Structured logging and lifecycle/identity display |
 | No complete measured benchmark | Capacity and latency cannot be promised | Implement the performance protocol |
 
 ## Out of scope for the current implementation

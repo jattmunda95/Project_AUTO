@@ -171,6 +171,66 @@ def test_prototype_shortlist_excludes_a_closer_reference_behind_a_far_prototype(
     assert result.similarity == pytest.approx(0.5)
 
 
+def test_every_scored_candidate_is_returned_best_first(
+    matcher: ReidMatcher, crop: Image.Image
+) -> None:
+    gallery = [
+        GalleryEntry(101, references(0.8, 0.7)),
+        GalleryEntry(902, references(1.0)),
+        GalleryEntry(555, references(0.2)),
+    ]
+
+    result = matcher.match_candidate(crop, gallery)
+
+    assert [candidate.item_id for candidate in result.candidates] == [902, 101, 555]
+    assert [candidate.n_references for candidate in result.candidates] == [1, 2, 1]
+    # No color/aspect descriptors supplied, so every score is the DINO-only fallback.
+    assert all(candidate.color_score is None for candidate in result.candidates)
+    assert result.candidates[1].final_score == pytest.approx(0.75)
+    assert result.decision_reason == "accepted"
+
+
+def test_zero_shortlist_size_scores_the_whole_gallery(
+    matcher: ReidMatcher, crop: Image.Image
+) -> None:
+    matcher.config = ReidConfig("unused-offline-model", "cpu", 0.75, 3, prototype_shortlist_size=0)
+    gallery = [
+        GalleryEntry(item_id, references(0.5), prototype=np.array([0.0, 1.0]))
+        for item_id in range(1, 11)
+    ]
+
+    result = matcher.match_candidate(crop, gallery)
+
+    assert len(result.candidates) == 10
+
+
+@pytest.mark.parametrize(
+    ("scores", "reason"),
+    [
+        ((0.9, 0.85), "low_margin"),  # clears 0.75 but beats runner-up by < 0.15
+        ((0.5, 0.1), "below_threshold"),
+        ((0.9, 0.1), "accepted"),
+    ],
+)
+def test_decision_reason_distinguishes_margin_from_threshold_failure(
+    matcher: ReidMatcher, crop: Image.Image, scores: tuple[float, float], reason: str
+) -> None:
+    matcher.config = ReidConfig("unused-offline-model", "cpu", 0.75, 3, margin_threshold=0.15)
+    gallery = [GalleryEntry(101, references(scores[0])), GalleryEntry(902, references(scores[1]))]
+
+    result = matcher.match_candidate(crop, gallery)
+
+    assert result.decision_reason == reason
+    assert result.accepted is (reason == "accepted")
+
+
+def test_empty_gallery_reports_its_reason(matcher: ReidMatcher, crop: Image.Image) -> None:
+    result = matcher.match_candidate(crop, [])
+
+    assert result.decision_reason == "gallery_empty"
+    assert result.candidates == ()
+
+
 def test_prototype_shortlist_always_keeps_entries_without_a_prototype(
     matcher: ReidMatcher, crop: Image.Image
 ) -> None:

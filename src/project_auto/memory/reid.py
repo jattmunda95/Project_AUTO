@@ -8,7 +8,9 @@ Subfunctions:
 - ReidMatcher loads DINOv2 and creates a normalized embedding from a prepared RGB crop.
 - match_candidate first shortlists the closest permanent items by prototype similarity,
   then compares only their references, averages each shortlisted item's top-k scores,
-  and applies the acceptance threshold to the best of those.
+  and applies the acceptance threshold to the best of those. The returned ReidMatch
+  also carries every scored candidate and the decision reason, so callers can record
+  diagnostics (see utils/reid_diagnostics.py) without this module writing files.
 
 The caller supplies eligible gallery entries; store.py loads them, prototype included.
 No database writes, tracker updates, ADD/RETURNED decisions, or capture scheduling
@@ -17,9 +19,7 @@ occur here. Real-image identity reliability remains unverified.
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -46,7 +46,7 @@ class ReidConfig:
 
     # TODO(calibrate): acceptance_threshold=0.55 and margin_threshold=0.15 (configs/reid.yaml)
     # are uncalibrated for the current weighted score (0.65 DINO + 0.20 color + 0.15 aspect).
-    # Tune both against logged same/different-item scores in logs/reid_match_log.csv.
+    # Tune both against labelled same/different-item scores from logs/reid_runs/.
     model_name: str
     device: str
     acceptance_threshold: float
@@ -56,16 +56,12 @@ class ReidConfig:
     # accepted; 0.0 (the default) disables the check. Guards against accepting a
     # weak best-of-a-bad-lot when two items score nearly the same.
     margin_threshold: float = 0.0
-    # Optional CSV path; when set, match_candidate appends one diagnostic row per
-    # call (scores, margin, threshold, accept/reject) for offline threshold tuning.
-    match_log_path: Path | None = None
 
     @classmethod
     def from_yaml(cls, config_path: Path) -> ReidConfig:
         with config_path.open(encoding="utf-8") as config_file:
             config = yaml.safe_load(config_file)
 
-        match_log_path = config.get("match_log_path")
         return cls(
             model_name=str(config["model_name"]),
             device=str(config["device"]),
@@ -73,7 +69,6 @@ class ReidConfig:
             top_k=int(config["top_k"]),
             prototype_shortlist_size=int(config.get("prototype_shortlist_size", 3)),
             margin_threshold=float(config.get("margin_threshold", 0.0)),
-            match_log_path=Path(match_log_path) if match_log_path else None,
         )
 
 
@@ -91,12 +86,31 @@ class GalleryEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateScore:
+    """One scored gallery item for one query; color/aspect None means DINO-only fallback."""
+
+    item_id: int
+    final_score: float
+    dino_score: float
+    color_score: float | None
+    aspect_score: float | None
+    n_references: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReidMatch:
-    """Result of comparing one detection crop against the gallery."""
+    """Result of comparing one detection crop against the gallery.
+
+    candidates and decision_reason are diagnostic evidence only and are excluded
+    from equality, so the decision itself is compared by item_id/similarity/accepted.
+    decision_reason is one of: accepted, low_margin, below_threshold, gallery_empty.
+    """
 
     item_id: int | None
     similarity: float
     accepted: bool
+    candidates: tuple[CandidateScore, ...] = field(default=(), compare=False)
+    decision_reason: str = field(default="", compare=False)
 
 
 class ReidMatcher:
@@ -192,36 +206,6 @@ class ReidMatcher:
         similarities = np.array([size_similarity(query_ratio, ratio) for ratio in valid_ratios])
         return self._top_k_mean(similarities)
 
-    _MATCH_LOG_HEADER = (
-        "timestamp",
-        "source_track_id",
-        "gallery_size",
-        "shortlisted",
-        "best_item_id",
-        "best_score",
-        "second_best_score",
-        "margin",
-        "dino_score",
-        "color_score",
-        "aspect_score",
-        "acceptance_threshold",
-        "margin_threshold",
-        "accepted",
-    )
-
-    def _log_match(self, row: dict[str, object]) -> None:
-        """Append one diagnostic row to config.match_log_path; writes the header once."""
-        log_path = self.config.match_log_path
-        if log_path is None:
-            return
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        is_new_file = not log_path.exists()
-        with log_path.open("a", newline="", encoding="utf-8") as log_file:
-            writer = csv.DictWriter(log_file, fieldnames=self._MATCH_LOG_HEADER)
-            if is_new_file:
-                writer.writeheader()
-            writer.writerow(row)
-
     def match_candidate(
         self,
         crop: Image.Image,
@@ -243,20 +227,23 @@ class ReidMatcher:
         the best score must clear the threshold, and must beat the runner-up
         score by at least margin_threshold (a single shortlisted item has no
         runner-up, so the margin check is automatically satisfied). source_track_id
-        is optional and used only to correlate the diagnostic CSV log, when
-        config.match_log_path is set, with the caller's track.
+        is optional and used only for diagnostic output.
+
+        Every shortlisted item's component scores are returned in
+        ReidMatch.candidates, ranked best first, whether or not it won.
 
         Does not mutate tracker or database state; callers own persistence.
         """
         if not gallery:
             log_action(Category.NEW, track=source_track_id, reason="gallery_empty")
-            return ReidMatch(item_id=None, similarity=0.0, accepted=False)
+            return ReidMatch(
+                item_id=None, similarity=0.0, accepted=False, decision_reason="gallery_empty"
+            )
 
         query_embedding = self.create_embedding(crop)
         shortlist = self._shortlist_by_prototype(query_embedding, gallery)
 
-        # (item_id, final_score, dino_score, color_score, aspect_score)
-        scored: list[tuple[int, float, float, float | None, float | None]] = []
+        scored: list[CandidateScore] = []
 
         for entry in shortlist:
             similarities = entry.embeddings @ query_embedding
@@ -274,11 +261,23 @@ class ReidMatcher:
             else:
                 final_score = dino_score
 
-            scored.append((entry.item_id, final_score, dino_score, color_score, aspect_score))
+            scored.append(
+                CandidateScore(
+                    item_id=entry.item_id,
+                    final_score=final_score,
+                    dino_score=dino_score,
+                    color_score=color_score,
+                    aspect_score=aspect_score,
+                    n_references=len(entry.embeddings),
+                )
+            )
 
-        scored.sort(key=lambda item: item[1], reverse=True)
-        best_item_id, best_score, best_dino, best_color, best_aspect = scored[0]
-        second_best_score = scored[1][1] if len(scored) > 1 else None
+        # Stable sort: equal scores keep gallery order, so the first item wins ties.
+        scored.sort(key=lambda candidate: candidate.final_score, reverse=True)
+        best = scored[0]
+        best_item_id, best_score = best.item_id, best.final_score
+        best_dino, best_color, best_aspect = best.dino_score, best.color_score, best.aspect_score
+        second_best_score = scored[1].final_score if len(scored) > 1 else None
         margin = float("inf") if second_best_score is None else best_score - second_best_score
 
         # TODO(UI): a margin failure here (best clears acceptance_threshold but
@@ -323,27 +322,17 @@ class ReidMatcher:
                 threshold=self.config.acceptance_threshold,
             )
 
-        self._log_match(
-            {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "source_track_id": source_track_id,
-                "gallery_size": len(gallery),
-                "shortlisted": len(shortlist),
-                "best_item_id": best_item_id,
-                "best_score": best_score,
-                "second_best_score": second_best_score,
-                "margin": margin,
-                "dino_score": best_dino,
-                "color_score": best_color,
-                "aspect_score": best_aspect,
-                "acceptance_threshold": self.config.acceptance_threshold,
-                "margin_threshold": self.config.margin_threshold,
-                "accepted": accepted,
-            }
-        )
+        if accepted:
+            decision_reason = "accepted"
+        elif ambiguous:
+            decision_reason = "low_margin"
+        else:
+            decision_reason = "below_threshold"
 
         return ReidMatch(
             item_id=best_item_id if accepted else None,
             similarity=best_score,
             accepted=accepted,
+            candidates=tuple(scored),
+            decision_reason=decision_reason,
         )

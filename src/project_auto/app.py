@@ -20,7 +20,13 @@ import yaml
 from project_auto.capture.camera import Camera, CameraConfig
 from project_auto.events.coordinator import IdentityCoordinator
 from project_auto.events.event_engine import EventEngine
-from project_auto.memory.reid import ReidConfig, ReidMatcher
+from project_auto.memory.reid import (
+    ASPECT_WEIGHT,
+    COLOR_WEIGHT,
+    DINO_WEIGHT,
+    ReidConfig,
+    ReidMatcher,
+)
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.detector import Detection, YoloDetector
 from project_auto.perception.scene_processor import SceneProcessor, SceneProcessorConfig
@@ -28,6 +34,7 @@ from project_auto.perception.segmenter import SamSegmenter, SegmenterConfig
 from project_auto.perception.tracker import DetectionTracker
 from project_auto.utils.drawing import draw_detections, draw_regions
 from project_auto.utils.logging import Category, log_action
+from project_auto.utils.reid_diagnostics import ReidDiagnostics
 from project_auto.region_queries import query_regions
 
 
@@ -49,6 +56,8 @@ def run_app() -> None:
         table_settings = yaml.safe_load(config_file)
     with scene_processor_config_path.open(encoding="utf-8") as config_file:
         scene_processor_settings = yaml.safe_load(config_file)
+    with reid_config_path.open(encoding="utf-8") as config_file:
+        reid_settings = yaml.safe_load(config_file)
 
     database_path = project_root / table_settings["database"]["path"]
     store = DatabaseStore(database_path)
@@ -87,6 +96,27 @@ def run_app() -> None:
             segmenter,
             matcher,
         )
+        diagnostics_dir = reid_settings.get("diagnostics_dir")
+        diagnostics = (
+            ReidDiagnostics(
+                root_dir=project_root / diagnostics_dir,
+                run_settings={
+                    "acceptance_threshold": reid_config.acceptance_threshold,
+                    "margin_threshold": reid_config.margin_threshold,
+                    "weights": f"{DINO_WEIGHT}/{COLOR_WEIGHT}/{ASPECT_WEIGHT}",
+                    "top_k": reid_config.top_k,
+                    "prototype_shortlist_size": reid_config.prototype_shortlist_size,
+                },
+                config_paths=(
+                    reid_config_path,
+                    scene_processor_config_path,
+                    segmenter_config_path,
+                ),
+                project_root=project_root,
+            )
+            if diagnostics_dir
+            else None
+        )
         coordinator = IdentityCoordinator(
             scene_processor=scene_processor,
             event_engine=event_engine,
@@ -118,6 +148,7 @@ def run_app() -> None:
                 scene_processor_settings["reference_novelty_threshold"]
             ),
             job_queue_max_size=int(scene_processor_settings["job_queue_max_size"]),
+            diagnostics=diagnostics,
         )
 
         with camera:

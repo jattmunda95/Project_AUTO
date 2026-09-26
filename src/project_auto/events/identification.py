@@ -61,6 +61,11 @@ class IdentificationJob:
     # Why the reference policy nominated this capture. Baseline (INITIAL) captures
     # are not novelty-gated: two similar baseline views are expected and wanted.
     candidate_kind: CandidateKind | None = None
+    # Diagnostics only (utils/reid_diagnostics.py): set on resolve jobs when
+    # recording is enabled, so the query, its candidates and its applied outcome
+    # can be joined. Never used for any identity decision.
+    query_id: str | None = None
+    frame_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +82,8 @@ class IdentificationResult:
     # Echoed back from the job so the coordinator can tell the reference policy
     # which nomination this outcome belongs to.
     candidate_kind: CandidateKind | None = None
+    # Echoed back from the job so the coordinator can record the applied outcome.
+    query_id: str | None = None
 
 
 _OUTSTANDING = (IdentificationState.QUEUED, IdentificationState.PROCESSING)

@@ -4,15 +4,19 @@ device: cpu
 # aspect ratio), not raw DINO cosine similarity alone; color/aspect similarity
 # run much higher than DINO's ~0.07 same-item scores observed pre-weighting, so
 # 0.55 is a starting estimate, not an empirically tuned value. Retune against
-# match_log_path's logged scores: watch several same-item re-detections vs
-# different-item detections and pick a threshold between the two clusters.
+# labelled runs in diagnostics_dir: compare genuine (true-item) scores with
+# impostor (other-item) scores and pick a threshold between the two clusters.
 acceptance_threshold: 0.55
 # The best-scoring item must beat the runner-up by at least this much to be
 # accepted, guarding against accepting a weak winner when two items score
 # nearly the same. Also an unvalidated starting estimate.
 margin_threshold: 0.15
 top_k: 3
-prototype_shortlist_size: 3
-# Diagnostic CSV: one row per match_candidate call (scores, margin, accept/
-# reject) for offline threshold tuning. Comment out to disable logging.
-match_log_path: logs/reid_match_log.csv
+# 0 disables the prototype shortlist so every gallery item is scored. Used for
+# ground-truth collection (6-10 items), so the true item's score is always
+# recorded; restore a positive value for large galleries.
+prototype_shortlist_size: 0
+# Ground-truth diagnostics (utils/reid_diagnostics.py): one folder per run with
+# queries.csv, candidates.csv, outcomes.csv and crops/, relative to the project
+# root. Resolve jobs only. Comment out to disable.
+diagnostics_dir: logs/reid_runs

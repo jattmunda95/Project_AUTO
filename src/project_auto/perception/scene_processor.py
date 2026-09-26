@@ -28,7 +28,7 @@ import yaml
 from numpy.typing import NDArray
 from PIL import Image
 
-from project_auto.memory.reid import GalleryEntry, ReidMatcher
+from project_auto.memory.reid import CandidateScore, GalleryEntry, ReidMatcher
 from project_auto.perception.descriptors import aspect_ratio as compute_aspect_ratio
 from project_auto.perception.descriptors import hsv_histogram
 from project_auto.perception.segmenter import SamSegmenter
@@ -79,13 +79,19 @@ class PreparedReference:
 
 @dataclass(frozen=True, slots=True)
 class IdentityDecision:
-    """Proposed identity outcome for one detection; the caller owns persistence."""
+    """Proposed identity outcome for one detection; the caller owns persistence.
+
+    candidates and reason are diagnostic evidence passed through from the matcher
+    (or the unusable-view reason for PENDING) and are excluded from equality.
+    """
 
     decision: IdentityDecisionType
     source_track_id: int
     item_id: int | None
     similarity: float
     reference: PreparedReference | None
+    candidates: tuple[CandidateScore, ...] = field(default=(), compare=False)
+    reason: str = field(default="", compare=False)
 
 
 class SceneProcessor:
@@ -118,10 +124,20 @@ class SceneProcessor:
         colour, and the result is embedded with ReID's own preprocessing.
         source_track_id is optional and used only for diagnostic output.
         """
+        reference, _ = self._prepare(frame, box, source_track_id)
+        return reference
+
+    def _prepare(
+        self,
+        frame: NDArray[np.uint8],
+        box: tuple[int, int, int, int],
+        source_track_id: int | None,
+    ) -> tuple[PreparedReference | None, str]:
+        """prepare_reference plus the unusable-view reason ("" when usable)."""
         segmentation = self._segmenter.segment(frame, [box])[0]
         if segmentation is None:
             log_action(Category.REJECT, track=source_track_id, box=box, reason="no_mask")
-            return None
+            return None, "no_mask"
 
         x1, y1, x2, y2 = segmentation.box
         mask_pixels = int(segmentation.mask[y1:y2, x1:x2].sum())
@@ -135,7 +151,7 @@ class SceneProcessor:
                 min_mask_pixels=self.config.min_mask_pixels,
                 sam_score=segmentation.score,
             )
-            return None
+            return None, "mask_too_small"
 
         crop = frame[y1:y2, x1:x2]
         mask = segmentation.mask[y1:y2, x1:x2]
@@ -151,7 +167,7 @@ class SceneProcessor:
         image = Image.fromarray(masked_rgb)
         embedding = self._matcher.create_embedding(image)
         box_area = (x2 - x1) * (y2 - y1)
-        return PreparedReference(
+        reference = PreparedReference(
             crop=image,
             embedding=embedding,
             aspect_ratio=compute_aspect_ratio(segmentation.box),
@@ -159,6 +175,7 @@ class SceneProcessor:
             sam_score=float(segmentation.score),
             mask_occupancy=(mask_pixels / box_area) if box_area > 0 else 0.0,
         )
+        return reference, ""
 
     def process(
         self,
@@ -176,15 +193,16 @@ class SceneProcessor:
         # TODO(perf): prepare_reference always runs full SAM+DINO inference even when the
         # gallery is nonempty; measure whether the resolve path is redoing embedding work
         # that a cheaper prefilter could skip before optimizing.
-        reference = self.prepare_reference(frame, box, source_track_id)
+        reference, unusable_reason = self._prepare(frame, box, source_track_id)
         if reference is None:
-            # prepare_reference already logged the REJECT reason (no_mask/mask_too_small).
+            # _prepare already logged the REJECT reason (no_mask/mask_too_small).
             return IdentityDecision(
                 decision="pending",
                 source_track_id=source_track_id,
                 item_id=None,
                 similarity=0.0,
                 reference=None,
+                reason=unusable_reason,
             )
 
         match = self._matcher.match_candidate(
@@ -208,4 +226,6 @@ class SceneProcessor:
             item_id=match.item_id if match.accepted else None,
             similarity=match.similarity,
             reference=reference,
+            candidates=match.candidates,
+            reason=match.decision_reason,
         )

@@ -111,6 +111,37 @@ ReID, or the database from the tracker itself. The event layer distinguishes new
 performance measurement and logging priorities. `PROJECT_CONTEXT.md` now describes the current
 async and spatial architecture; the detailed reference is `docs/11-regions.md`.
 
+## Reference capture (event-driven, not continuous)
+
+Reference capture is sparse and movement-driven, owned by `ReferencePolicy`
+(`events/reference_policy.py`), not a flat time interval. A static item captures exactly
+`initial_reference_count` (2) baseline references (the identity-resolve embedding is baseline
+reference 1 at no extra cost) and then **nothing further while it remains still** — do not
+reintroduce continuous/interval-based capture; a static gallery of near-identical references
+was the real production problem this replaced. `DetectionTracker` emits `MOVE_START`/`MOVE_END`
+(runtime tracking transitions, never persisted as `ItemEvent`s and never forwarded to
+`EventEngine`) which arm a bounded number of candidate nominations
+(`max_movement_reference_attempts`). Candidate evaluation is two-staged on purpose: Stage A
+(cheap: crop validity, box area, detector confidence, frame visibility, sharpness) runs on the
+main thread before a job is ever queued; Stage B (SAM mask score, mask occupancy, novelty vs.
+the existing gallery) runs in the worker after SAM/DINO. Never invoke SAM or DINO on every
+frame of a tracked object, and never let a rejected candidate reach
+`add_reference_if_needed`/update the prototype. `mask_occupancy` is a mask-sanity measure, not
+occlusion detection — do not rename or repurpose it as such; true partial-occlusion reasoning is
+explicitly deferred (see the `TODO(occlusion)` on `PreparedReference`). All of this is unit- and
+integration-tested (200 tests) but has not yet run against a live camera — see `TASKS.md`'s
+Current task.
+
+## Diagnostic output (action-classified, not file-tagged)
+
+Diagnostic output is classified by what action it represents (`EVENT`, `NEW`, `MATCH`, `ASSOC`,
+`AMBIG`, `REJECT`, `DEFER`, `CAPTURE`, `QUEUE`, `ERROR`, `REGION`, `SYSTEM` — see
+`utils/logging.py::log_action()`), not by which file happened to run. Each action logs exactly
+once, at the layer that owns the data behind it (e.g. `reid.py` owns the `MATCH`/`AMBIG`/`NEW`
+decision since it already has the scores; `event_engine.py` owns `EVENT` since that's where
+persistence actually commits). Do not add a second print/log for an action another layer
+already logs — that reintroduces the exact multi-file echo this replaced.
+
 ## Region-memory boundaries
 
 Region geometry is pure pixel-space logic in `memory/regions.py`; keep SQL/session access in

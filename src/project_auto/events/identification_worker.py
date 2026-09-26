@@ -2,14 +2,17 @@
 
 Subfunctions:
 - Own a bounded job queue and an unbounded result queue; submit() never blocks the
-  caller (put_nowait), returning False when the queue is full.
+  caller (put_nowait), returning False when full or the worker is unavailable.
 - Run one background thread that pulls jobs, calls SceneProcessor (SAM + DINO +
   gallery matching) or persists a reference, and pushes one IdentificationResult
   per job.
 - Own the in-memory ReID gallery snapshot used for matching; refreshed in this
   thread only, right after a reference is actually saved, so no cross-thread
   mutation of gallery state is possible.
-- Shut down cleanly via a sentinel job so the process never hangs on exit.
+- When a ReidDiagnostics recorder is supplied, record every resolve job's query
+  row, all candidate scores and its crops (disk writes stay off the video thread).
+- Report initial gallery-loading failure to the main thread before startup returns.
+- Request shutdown via an event and sentinel, with a bounded wait for active work.
 
 This module never touches tracker, event-engine, or state-machine state; it only
 calls SceneProcessor and DatabaseStore. project_auto.events.coordinator (main
@@ -31,8 +34,9 @@ import numpy as np
 from project_auto.events.identification import IdentificationJob, IdentificationResult
 from project_auto.events.reference_policy import CandidateKind
 from project_auto.memory.store import DatabaseStore
-from project_auto.perception.scene_processor import SceneProcessor
+from project_auto.perception.scene_processor import IdentityDecision, SceneProcessor
 from project_auto.utils.logging import Category, log_action
+from project_auto.utils.reid_diagnostics import CandidateRecord, QueryRecord, ReidDiagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +75,14 @@ class IdentificationWorker:
     # A candidate at or above this similarity to an existing reference of the same
     # item adds no appearance diversity and is rejected as redundant.
     reference_novelty_threshold: float = 1.0
+    # Optional ground-truth diagnostics; None disables recording entirely.
+    diagnostics: ReidDiagnostics | None = None
     _job_queue: queue.Queue = field(init=False, repr=False)
     _result_queue: queue.Queue = field(init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _startup_complete: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _startup_error: BaseException | None = field(default=None, init=False, repr=False)
+    _stop_requested: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _gallery: list = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -81,24 +90,54 @@ class IdentificationWorker:
         self._result_queue = queue.Queue()
 
     def start(self) -> None:
-        """Start the background worker thread if it is not already running."""
+        """Wait for worker-owned gallery loading; propagate startup failure to the caller."""
+        if self._startup_error is not None:
+            raise RuntimeError(
+                "Identification worker failed to load its gallery"
+            ) from self._startup_error
+        if self._stop_requested.is_set():
+            raise RuntimeError("A stopped identification worker cannot be restarted")
         if self._thread is not None:
             return
         self._thread = threading.Thread(
             target=self._run, name="identification-worker", daemon=True
         )
         self._thread.start()
+        self._startup_complete.wait()
+        if self._startup_error is not None:
+            self._thread.join()
+            raise RuntimeError(
+                "Identification worker failed to load its gallery"
+            ) from self._startup_error
 
     def stop(self, timeout: float | None = 5.0) -> None:
-        """Ask the worker to finish its current job and stop; safe to call once."""
+        """Finish the current job, discard queued work, and wait at most timeout seconds.
+
+        Running inference cannot be interrupted; retain the thread so a later stop
+        can join it again if the timeout expires.
+        """
+        self._stop_requested.set()
         if self._thread is None:
             return
-        self._job_queue.put(_SHUTDOWN)
+        if self._thread.is_alive():
+            try:
+                self._job_queue.put_nowait(_SHUTDOWN)
+            except queue.Full:
+                pass  # The stop event ends the loop after the current job.
         self._thread.join(timeout)
-        self._thread = None
+        if not self._thread.is_alive():
+            self._thread = None
 
     def submit(self, job: IdentificationJob) -> bool:
-        """Enqueue one job without blocking; False means the bounded queue is full."""
+        """Enqueue without blocking; reject a full queue or an unavailable worker."""
+        if (
+            not self._startup_complete.is_set()
+            or self._startup_error is not None
+            or self._stop_requested.is_set()
+            or self._thread is None
+            or not self._thread.is_alive()
+        ):
+            return False
         try:
             self._job_queue.put_nowait(job)
             return True
@@ -120,12 +159,14 @@ class IdentificationWorker:
         self._gallery = self.store.load_reid_gallery(self.reid_model_name, statuses=None)
 
     def _run(self) -> None:
-        # TODO(worker): this initial refresh_gallery() call is outside per-job exception
-        # handling (_process_safely), so a schema/DB failure here silently stops the worker
-        # thread without surfacing any error to the main thread or the user. Improve startup
-        # failure reporting instead of letting the thread just exit.
-        self.refresh_gallery()
-        while True:
+        try:
+            self.refresh_gallery()
+        except BaseException as exc:  # Always release the startup waiter, even on thread exit.
+            self._startup_error = exc
+            return
+        finally:
+            self._startup_complete.set()
+        while not self._stop_requested.is_set():
             job = self._job_queue.get()
             if job is _SHUTDOWN:
                 return
@@ -143,7 +184,10 @@ class IdentificationWorker:
                 track_id=job.track_id,
                 status="error",
                 item_id=job.item_id,
-                failure_reason=repr(exc),            )
+                failure_reason=repr(exc),
+                candidate_kind=job.candidate_kind,
+                query_id=job.query_id,
+            )
         logger.debug(
             "identification.job_done track_id=%s kind=%s status=%s duration_s=%.3f",
             job.track_id,
@@ -163,12 +207,14 @@ class IdentificationWorker:
             raise ValueError("A resolve job requires a frame and a box")
 
         decision = self.scene_processor.process(job.frame, job.box, job.track_id, self._gallery)
+        self._record_resolve(job, decision)
         if decision.decision == "pending":
             return IdentificationResult(
                 kind="resolve",
                 track_id=job.track_id,
                 status="pending",
                 failure_reason="unusable_reference",
+                query_id=job.query_id,
             )
 
         status: str = "new" if decision.decision == "new" else "existing"
@@ -179,6 +225,55 @@ class IdentificationWorker:
             item_id=decision.item_id,
             similarity=decision.similarity,
             reference=decision.reference,
+            query_id=job.query_id,
+        )
+
+    def _record_resolve(self, job: IdentificationJob, decision: IdentityDecision) -> None:
+        """Write one resolve job's query row, candidate rows and crops, if enabled."""
+        if self.diagnostics is None or job.query_id is None or job.frame is None or job.box is None:
+            return
+        reference = decision.reference
+        if decision.decision == "pending":
+            label = "DEFER"
+        elif decision.decision == "existing":
+            label = "MATCH"
+        elif decision.reason == "low_margin":
+            label = "AMBIG"
+        else:
+            label = "NEW"
+
+        frame_height, frame_width = job.frame.shape[:2]
+        x1, y1, x2, y2 = job.box
+        raw_crop = job.frame[
+            max(0, y1) : min(frame_height, y2), max(0, x1) : min(frame_width, x2)
+        ]
+        self.diagnostics.record_query(
+            QueryRecord(
+                query_id=job.query_id,
+                frame_index=job.frame_index,
+                track_id=job.track_id,
+                box=job.box,
+                det_confidence=job.detection.confidence if job.detection is not None else None,
+                sam_score=reference.sam_score if reference is not None else None,
+                mask_occupancy=reference.mask_occupancy if reference is not None else None,
+                gallery_size=len(self._gallery),
+                decision=label,
+                decision_reason=decision.reason,
+                matched_item_id=decision.item_id,
+            ),
+            [
+                CandidateRecord(
+                    item_id=candidate.item_id,
+                    final_score=candidate.final_score,
+                    dino_score=candidate.dino_score,
+                    color_score=candidate.color_score,
+                    aspect_score=candidate.aspect_score,
+                    n_references=candidate.n_references,
+                )
+                for candidate in decision.candidates
+            ],
+            raw_crop_bgr=raw_crop,
+            masked_crop=reference.crop if reference is not None else None,
         )
 
     def _reject_capture(
