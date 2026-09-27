@@ -2,6 +2,8 @@
 
 ## Persistent entities
 
+![Persistent identity, event, reference and region relationships](assets/diagrams/memory.svg)
+
 ```text
 items (permanent identity)
   | 1                       | 1
@@ -22,7 +24,7 @@ regions (logical polygons)
 
 Items have one-to-many relationships to both child tables. Foreign keys are enabled for every store connection. Deleting an item cascades to its events and embeddings. SQLAlchemy string enums constrain stored status/event values. Indexes include event item/time and embedding item/model lookup pairs.
 
-Evidence fields hold object-image, context-image, or video-clip paths, not binary media. Their presence in the schema does not mean the live pipeline writes evidence files: current worker reference saves provide vectors, descriptors and model names, without saving the PIL crop to disk.
+Evidence fields hold object-image, context-image, or video-clip paths, not binary media. Their presence in the schema does not mean the live pipeline writes evidence files: reference saves provide vectors, descriptors and model names without filling those evidence paths. The separate diagnostic recorder can save raw/masked resolve crops under its run directory; those files are not linked to lifecycle evidence columns.
 
 ## States and events
 
@@ -71,3 +73,7 @@ Aspect and histogram descriptors are integrated through PreparedReference, worke
 All region FKs use ON DELETE SET NULL; historical event strings survive region deletion/renaming. ADD/MOVED/RETURNED set current_box/current_region_id and update last_seen_at within the event transaction. REMOVED preserves source evidence and clears current fields. The generic record_event API remains an append-only historical operation rather than a live-state transition. Store queries distinguish current contents, historical associated items, and event activity by their respective item/event FKs. Full field semantics, normalized-area formula, conservative legacy fallback, and API signatures: [region memory](11-regions.md).
 
 Sources: [models](../src/project_auto/memory/models.py), [store](../src/project_auto/memory/store.py), [event engine](../src/project_auto/events/event_engine.py), [job contracts](../src/project_auto/events/identification.py).
+
+## Diagnostic data outside SQLite
+
+The separate diagnostic launcher writes queries.csv, candidates.csv, outcomes.csv and crops under logs/reid_runs/run_id. query_id links scored evidence to the outcome applied by the coordinator. Ground-truth labels still need human input. Normal tracking does not create these diagnostic files.

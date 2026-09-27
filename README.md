@@ -45,6 +45,16 @@ project-auto
 
 In the tracking window, w asks for item ID/exact name, r inspects a region by name, and q quits. Terminal prompts pause the capture loop. Query highlights last 150 frames by default.
 
+## ReID diagnostics
+
+To record data for ReID threshold tuning, launch the separate diagnostic entry point instead:
+
+```powershell
+python -m project_auto.reid_diagnostics_app
+```
+
+It runs the same pipeline with a separate database, whole-gallery scoring and per-run CSVs and crops under `logs/reid_runs/` for offline labelling ([operations](docs/09-operations.md)). The normal `project-auto` launch is unaffected.
+
 ## Configuration and boundaries
 
 All six YAML files are covered by the [configuration reference](docs/06-configuration.md). Current YOLO confidence is 0.18 and image_size is 960; agnostic_nms inherits the inspected installed-library default False. ReID acceptance_threshold 0.55 and margin_threshold 0.15 are provisional. Camera capture is requested at 1280 x 720, 30 FPS; actual throughput is unmeasured.

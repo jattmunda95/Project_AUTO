@@ -2,7 +2,7 @@
 
 ## Verification boundaries
 
-This documentation reflects source/YAML review through 23 September 2026 (Reference Capture V2, action-classified logging). The 23 September implementation run passed 200 tests (34 new: reference-policy state machine and descriptor/geometry coverage, plus updated coordinator/tracker/worker tests). That is recorded implementation evidence, not a guarantee of live hardware behavior — Reference Capture V2 has not yet run against a real camera. The earlier region implementation run passed 160 tests; both counts are historical run evidence, not a claim about the current total.
+This documentation reflects source/YAML review through 26 September 2026 (ReID diagnostic entry point; earlier Reference Capture V2 and action-classified logging). The 26 September run passed 228 tests, adding coverage for the diagnostic recorder, the diagnostic entry point and the candidate/decision-reason evidence; neither entry point has been run against a live camera since. The 23 September implementation run passed 200 tests (34 new: reference-policy state machine and descriptor/geometry coverage, plus updated coordinator/tracker/worker tests). That is recorded implementation evidence, not a guarantee of live hardware behavior — Reference Capture V2 has not yet run against a real camera. The earlier region implementation run passed 160 tests; both counts are historical run evidence, not a claim about the current total.
 
 `pytest` was not previously installed in `.venv`; it has since been installed. On Windows with the project checked out under a OneDrive-synced path, `pytest`'s default `tmp_path` fixture can hit `PermissionError` against the OneDrive temp-sync lock (the same class of issue as the SQLite `database is locked` investigation); pass `--basetemp` pointed at a plain local writable directory to avoid it.
 
@@ -20,7 +20,9 @@ The documentation build/link checks validate navigation, anchors, and generated 
 | [test_state_machine.py](../tests/test_state_machine.py) | Lifecycle decisions and permanent identity requirements |
 | [test_event_engine.py](../tests/test_event_engine.py) | Event dispatch, bindings, return/removal behavior |
 | [test_memory_database.py](../tests/test_memory_database.py) | Schema and persistent-memory behavior |
-| [test_reid.py](../tests/test_reid.py) | Synthetic embedding matching and prototype shortlist behavior |
+| [test_reid.py](../tests/test_reid.py) | Synthetic embedding matching, prototype shortlist behavior, whole-gallery scoring, returned candidates and decision reasons |
+| [test_reid_diagnostics.py](../tests/test_reid_diagnostics.py) | Run folder, CSV headers and rows, candidate ranking, crop saving, outcome linking, fail-soft writes |
+| [test_reid_diagnostics_app.py](../tests/test_reid_diagnostics_app.py) | Diagnostic overrides reach run_app; normal reid.yaml keeps shortlist 3 and has no diagnostic keys |
 | [test_scene_processor.py](../tests/test_scene_processor.py) | Crop/mask preparation and identity proposals |
 | [test_descriptors.py](../tests/test_descriptors.py) | Frame-visibility geometry (predicted vs. clipped box) and Laplacian sharpness |
 | [test_reference_policy.py](../tests/test_reference_policy.py) | ReferencePolicy state machine: baseline scheduling, MOVE_START/MOVE_END nomination, attempt budgets, retry spacing |
@@ -51,7 +53,7 @@ Use an isolated database and record the hardware/configuration. Calibrate overla
 
 ## Documentation structure and ownership
 
-The numbered Markdown files are the maintained content source. `build_docs.py` generates the HTML home page, chapter pages, shared CSS, and home-page search behavior using Python's standard library. Generated files are committed for immediate offline access. `check_docs.py` checks local HTML links, fragments, titles, and generated-page coverage without importing project models or opening its database.
+The numbered Markdown files are the maintained content source. `build_docs.mjs` generates the HTML home page, chapter pages, shared CSS, and home-page search behavior using Node.js, with Python syntax parsing for the source index. Generated files are committed for immediate offline access. `check_docs.py` checks local HTML links, fragments, titles, and generated-page coverage without importing project models or opening its database.
 
 | Change type | Chapters to review |
 | --- | --- |
@@ -69,3 +71,7 @@ Update the review date after a substantive source review. Cite the relevant sour
 The root README and PROJECT_CONTEXT now summarize the integrated async and spatial architecture. TASKS separates current priorities from historical milestones; historical thresholds/pass counts are not current configuration. AGENTS retains the working agreement and points to the updated architecture and remaining verification work.
 
 Keep source-level limits explicit: lifecycle writes still run on the main thread, reference save limits do not stop every inference request, resolve and capture retry behavior differ, and margin rejection currently becomes NEW through SceneProcessor. The region layer does not add per-frame DB observations or move SQL into geometry/tracking. Review [chapter 11](11-regions.md) with any change to these contracts.
+
+## Diagram and source-index verification
+
+The 26 September documentation integration adds local SVG diagrams, a complete project map and a generated Python/file index. The builder parses Python syntax without importing the application. The documentation checker validates local links and diagram assets. Rebuild after source changes so line numbers and catalog entries remain current. These documentation checks do not imply a live-camera or recognition-accuracy test.

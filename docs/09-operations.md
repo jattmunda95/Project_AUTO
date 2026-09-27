@@ -65,7 +65,7 @@ Open [index.html](index.html) directly in a browser. Chapter pages render fully 
 Edit the numbered Markdown chapters, then rebuild generated pages from the repository root:
 
 ```powershell
-python docs/build_docs.py
+node docs/build_docs.mjs
 python docs/check_docs.py
 ```
 
@@ -74,6 +74,18 @@ Sources: [application](../src/project_auto/app.py), [camera](../src/project_auto
 ## Define regions before tracking
 
 Run python -m project_auto.region_calibration from the activated editable checkout. Click polygon vertices, use u to undo, Enter/c to close, and enter a unique name in the terminal. q exits calibration. The application reuses Camera/CameraConfig; calibration is a separate launch and does not run detector/identity inference. Complete controls, source-path invocation, and query semantics are in [regions and spatial memory](11-regions.md).
+
+## Record ReID ground-truth data
+
+Use the separate diagnostic entry point, not the normal app:
+
+```powershell
+python -m project_auto.reid_diagnostics_app
+```
+
+After reinstalling the editable package, `project-auto-diagnostics` is equivalent. Controls are the same as the normal app. It uses its own database, `data/diagnostics/project_auto_diagnostics.db`, so test objects never enter normal memory. Delete that file to start a session with an empty gallery, which keeps NEW/SAME labels unambiguous. It contains no calibrated regions.
+
+Each launch creates `logs/reid_runs/<run_id>/` with queries.csv, candidates.csv, outcomes.csv and crops/. Label offline: open queries.csv beside the crops folder and fill in a ground_truth.csv (query_id, true_object, expected_outcome NEW/SAME, label_quality clear/partial/unsure, notes) plus an objects.csv mapping each object name to the item_id created when it was first enrolled. The first sighting of an object in a fresh diagnostic database is NEW; later sightings are SAME. Both `logs/` and `data/diagnostics/` are git-ignored.
 
 ## Missing-column startup incident and recovery
 

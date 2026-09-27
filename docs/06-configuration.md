@@ -42,7 +42,9 @@ BoT-SORT's `botsort.yaml` name and `persist=True` are selected in detector code 
 | reid.yaml: device | cpu | PyTorch embedding device |
 | reid.yaml: acceptance_threshold | 0.55 | Final weighted score threshold, or DINO-only fallback; provisional, not a probability |
 | reid.yaml: margin_threshold | 0.15 | Minimum best-minus-runner-up final score; provisional |
-| reid.yaml: match_log_path | logs/reid_match_log.csv | Optional diagnostic CSV; omit to disable; relative paths follow working directory |
+| reid_diagnostics.yaml: output_dir | logs/reid_runs | Separate diagnostic launcher only; resolved from project root |
+| reid_diagnostics.yaml: prototype_shortlist_size | 0 | Override: score every gallery item in diagnostic mode |
+| reid_diagnostics.yaml: database_path | data/diagnostics/project_auto_diagnostics.db | Separate diagnostic memory; normal tracking still uses table.yaml |
 | reid.yaml: top_k | 3 | Number of strongest references averaged, capped by available references |
 | reid.yaml: prototype_shortlist_size | 3 | Ranked prototype candidates; missing prototypes are retained additionally |
 
@@ -83,3 +85,7 @@ These filters and cooldowns are not universal capture guarantees. Stage A runs o
 Sources: [camera settings](../configs/camera.yaml), [perception settings](../configs/perception.yaml), [database settings](../configs/table.yaml), [SAM2 settings](../configs/segmenter.yaml), [ReID settings](../configs/reid.yaml), [scene settings](../configs/scene_processor.yaml).
 
 ReID weights (0.65 DINO, 0.20 color, 0.15 aspect) are constants in memory/reid.py, not YAML options. The older 0.4 threshold applied to DINO-only scoring and is historical; the current 0.55/0.15 settings need empirical calibration for the weighted score and descriptor-missing fallback. The 960 detector input requests more inference pixels than 640; no measured throughput effect is claimed.
+
+## Normal versus diagnostic configuration
+
+Normal tracking uses the six original YAML files and shortlist 3. Only reid_diagnostics_app.py reads the seventh file, reid_diagnostics.yaml, and supplies its overrides to app.run_app. Its diagnostic database starts without the normal database’s regions; calibration does not copy them automatically.

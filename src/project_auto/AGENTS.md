@@ -142,6 +142,21 @@ decision since it already has the scores; `event_engine.py` owns `EVENT` since t
 persistence actually commits). Do not add a second print/log for an action another layer
 already logs — that reintroduces the exact multi-file echo this replaced.
 
+## ReID diagnostics (separate entry point, not the normal app)
+
+Ground-truth recording lives only in the separate entry point
+`project_auto/reid_diagnostics_app.py` (`python -m project_auto.reid_diagnostics_app`), configured by
+`configs/reid_diagnostics.yaml` (output folder, `prototype_shortlist_size: 0`, separate database).
+The normal `project-auto` entry point must stay behaviourally unaffected: `run_app()` with no
+arguments passes no recorder, reads no diagnostic config and keeps `reid.yaml`'s shortlist of 3.
+Do not add diagnostic keys to `reid.yaml` or construct `ReidDiagnostics` in the normal path
+(`test_reid_diagnostics_app.py` guards the config). `utils/reid_diagnostics.py` imports nothing from
+the pipeline; callers pass plain values. It records resolve jobs only, on the worker thread (never
+disk writes on the video thread), and must never fail an identity job. Every recording hook in the
+coordinator/worker is a no-op when `diagnostics` is None. `ReidMatch.candidates`/`decision_reason`
+and `IdentityDecision.candidates`/`reason` are evidence only, excluded from equality; never base an
+identity decision on them outside the existing accept/margin logic.
+
 ## Region-memory boundaries
 
 Region geometry is pure pixel-space logic in `memory/regions.py`; keep SQL/session access in

@@ -24,7 +24,7 @@ These are operating assumptions, not validated guarantees for every deployment.
 
 | Limitation | Impact | Follow-up direction |
 | --- | --- | --- |
-| ReID threshold is provisional | Recognition quality at decision margins is unknown | Empirical same/different-item calibration and held-out evaluation; blocked on adding a ground-truth label to reid_match_log.csv |
+| ReID threshold is provisional | Recognition quality at decision margins is unknown | Empirical same/different-item calibration and held-out evaluation. Recording exists (reid_diagnostics_app, query_id-keyed CSVs and crops); a labelled live session and the join/analysis script are still pending |
 | Reference-capture quality/novelty thresholds are provisional | min_reference_sharpness, min_mask_score, min_mask_occupancy, reference_novelty_threshold are uncalibrated starting estimates | Run against a live camera and tune from the CAPTURE/REJECT action-classified logs |
 | Reference Capture V2 is untested on live hardware | Sparse/event-driven capture behavior (baseline stop, MOVE_START/MOVE_END nomination) is verified only by fakes/synthetic images | Run project-auto against a real camera and confirm the documented lifecycle |
 | Movement before identity is dropped | Event history can omit an early movement | Define buffering/reconciliation policy |

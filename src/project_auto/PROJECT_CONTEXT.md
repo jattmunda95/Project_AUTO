@@ -1,6 +1,34 @@
 # Project AUTO Context
 
-Source-reviewed architecture handoff: 23 September 2026 (Reference Capture V2 and action-classified logging). Detailed contracts live in the [modular docs](../../docs/README.md), especially [architecture](../../docs/02-architecture.md), [data](../../docs/05-data.md), and [regions](../../docs/11-regions.md). TASKS holds current priorities and historical verification.
+Source-reviewed architecture handoff: 26 September 2026 (ReID diagnostic entry point; builds on 23 September Reference Capture V2 and action-classified logging). Detailed contracts live in the [modular docs](../../docs/README.md), especially [architecture](../../docs/02-architecture.md), [data](../../docs/05-data.md), and [regions](../../docs/11-regions.md). TASKS holds current priorities and historical verification.
+
+## MVP definition
+
+Recorded 27 September 2026 as the working MVP. It is synthesised from the recorded scope, not a formally signed-off acceptance test, and its accuracy targets are not yet quantified.
+
+**Goal:** a local, single-camera system that remembers individual physical objects and can answer where an object was last placed, including after it has left the camera's view.
+
+**Required capabilities:**
+
+1. **Perceive:** detect and track objects in a fixed tabletop scene.
+2. **Identify:** assign each object a permanent individual identity, not only a class label (this cup, not "a cup").
+3. **Re-identify:** recognise a returning object as the same item, not create a new one.
+4. **Record change:** persist meaningful lifecycle events (ADDED, MOVED, REMOVED, RETURNED), never per-frame observations.
+5. **Persist:** keep item identities, events and last locations across restarts in a local SQLite database.
+6. **Answer:** respond to basic location queries (where an item is or was last seen, and what a named region contains). A console interface is sufficient.
+
+**Acceptance demonstration** (one continuous run, with named regions already calibrated):
+
+1. Place an object → it is ADDED as a new item in the correct region.
+2. Move it to another named region → a MOVED event records both regions.
+3. Remove it from view → it is marked REMOVED.
+4. Query its location → the console reports its last-seen region.
+5. Return it → it is re-identified as the original item (RETURNED), not added as a new one.
+6. Restart the application and repeat step 4 → the answer survives the restart.
+
+**Out of scope:** voice or natural-language interaction, a polished GUI, multiple cameras, 3D or depth positioning, cloud services, and guaranteed recognition of visually identical objects.
+
+**Dependable-MVP gate:** the capabilities above are implemented end to end, but the MVP cannot be called dependable until (a) ReID `acceptance_threshold`/`margin_threshold` and score weights are calibrated from labelled diagnostic runs and hold on a held-out session, (b) Reference Capture V2 has run against a live camera, and (c) region calibration and console queries are validated on physical hardware. Quantified pass criteria (for example re-identification and false-match rates) are still to be defined; see `TASKS.md`.
 
 ## Purpose and architecture
 
@@ -19,6 +47,9 @@ SPATIAL TRANSACTION: event boxes -> store loads regions -> pure centroid resolve
         -> event region IDs/name snapshots/boxes/area fractions + current Item location
 
 SEPARATE CALIBRATION: Camera -> clicked polygon -> validated geometry -> store Region
+
+SEPARATE DIAGNOSTICS: reid_diagnostics_app -> run_app(overrides) -> same pipeline
+        + ReidDiagnostics recorder (resolve jobs only) -> logs/reid_runs/<run_id>/
 ```
 
 SAM/DINO matching and reference saves run on one background worker. The coordinator applies identity results and lifecycle writes on the main thread. Nonblocking queue calls do not make capture, detection, terminal input, or lifecycle SQL nonblocking. Initial gallery loading is outside per-job exception handling, so schema failures can stop the worker.
@@ -37,7 +68,11 @@ Diagnostic output is action-classified (`utils/logging.py::log_action()`: `EVENT
 
 ## Matching contract
 
-DINO prototypes shortlist three ranked items; missing prototypes remain eligible. Top-k reference similarities use k=3. When both supplementary scores are available, final score is 0.65 DINO + 0.20 color + 0.15 aspect, otherwise DINO alone. Aspect ratio is max(w/h, h/w); masked 32x32 Hue/Saturation histograms exclude background. The current score threshold is 0.55 and runner-up margin 0.15, both uncalibrated. Diagnostic CSV output is configured at logs/reid_match_log.csv. Margin rejection currently flows to NEW rather than an explicit ambiguity state.
+DINO prototypes shortlist three ranked items; missing prototypes remain eligible. Top-k reference similarities use k=3. When both supplementary scores are available, final score is 0.65 DINO + 0.20 color + 0.15 aspect, otherwise DINO alone. Aspect ratio is max(w/h, h/w); masked 32x32 Hue/Saturation histograms exclude background. The current score threshold is 0.55 and runner-up margin 0.15, both uncalibrated. Margin rejection currently flows to NEW rather than an explicit ambiguity state. The matcher returns every scored candidate and a decision reason (accepted/low_margin/below_threshold/gallery_empty) as diagnostic evidence only; the normal app writes no match CSV (the old logs/reid_match_log.csv writer was removed).
+
+## ReID diagnostics (separate entry point)
+
+`python -m project_auto.reid_diagnostics_app` runs the normal `run_app()` with overrides from `configs/reid_diagnostics.yaml`: a `utils/reid_diagnostics.py` recorder, `prototype_shortlist_size: 0` (whole gallery scored) and a separate database `data/diagnostics/project_auto_diagnostics.db`. Each run writes `logs/reid_runs/<run_id>/` with queries.csv (one row per resolve job, keyed by query_id), candidates.csv (every scored item's component scores), outcomes.csv (the applied ADDED/RETURNED/ASSOC/DEFER/... outcome) and raw/masked crops. Labelling is done offline by hand (ground_truth.csv + objects.csv, joined on query_id). The normal `project-auto` entry point never reads that config and passes no recorder, so its behaviour is unchanged; the recording hooks in coordinator/worker are inert without a recorder.
 
 ## Persistent and spatial memory
 
@@ -59,4 +94,4 @@ create_all creates tables but never adds missing columns. The observed startup f
 
 The region implementation run passed 160 tests, including geometry, transactional location transitions, removal/deletion preservation, query fallback, and simulated calibration input. Earlier notes report successful live ReID scenarios. Physical-camera region calibration, current weighted-score accuracy, and performance at conf=0.18/imgsz=960 are not yet validated here. Installed Ultralytics defaults agnostic_nms to False; the project does not explicitly override it.
 
-Main follow-ups: confirm database provenance/schema, live region lifecycle checks, threshold calibration, structured logging, measured frame dropout/latency, worker startup failure visibility, capture-cap scheduling, generation-aware stale-result protection, complete occlusion semantics, and saved evidence files. LLM UI, world coordinates, polygon versions and materialized region statistics remain deferred.
+Main follow-ups: confirm database provenance/schema, live region lifecycle checks, a first labelled diagnostic run plus the join/analysis script for threshold calibration, structured logging, measured frame dropout/latency, worker startup failure visibility, capture-cap scheduling, generation-aware stale-result protection, complete occlusion semantics, and saved evidence files. LLM UI, world coordinates, polygon versions and materialized region statistics remain deferred.

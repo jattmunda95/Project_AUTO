@@ -4,25 +4,7 @@
 
 The application is one local Python process with an OpenCV display, one camera source, a main processing thread, one identification worker thread, and a SQLite file. Model acquisition can require network access during preparation. The configured inference devices are CPU; no cloud inference service is called by the application pipeline.
 
-```text
-MAIN THREAD
-Camera -> YOLO11s / OpenVINO / BoT-SORT -> DetectionTracker
-                                           |
-                               ADD / MOVED / REMOVE
-                                           |
-                                  IdentityCoordinator
-                                    |            ^
-                         copied frame jobs    results
-                                    v            |
-WORKER THREAD                  bounded queue -> SAM2 -> DINOv2
-                                              |          |
-                                      reference saves   gallery match
-                                              |
-                                            SQLite
-
-MAIN THREAD: coordinator -> EventEngine -> StateDecision / SQLite
-             detections -> draw_detections -> OpenCV window
-```
+![Main thread, worker and persistent memory](assets/diagrams/overview.svg)
 
 ## Startup and shutdown
 
@@ -30,7 +12,7 @@ The console entry point calls `main.main()`, which calls `app.run_app()`. Paths 
 
 Each iteration reads a frame, detects objects, updates the lifecycle tracker, passes signals and detections to the coordinator, and draws the debug frame. Pressing q exits; w/r trigger blocking terminal queries and temporary polygon highlights. Cleanup destroys OpenCV windows, asks the worker to stop, and disposes the database engine; the camera context releases capture.
 
-The worker shutdown uses a blocking sentinel enqueue followed by a timed join. It is not a guaranteed five-second total shutdown: a full queue can delay enqueue, and queued work can precede the sentinel.
+Worker startup waits for gallery loading and propagates loading failures to the caller. Shutdown sets a stop event, attempts a nonblocking sentinel enqueue and joins for the requested timeout. Queued work is skipped; active inference cannot be interrupted.
 
 ## Responsibility and thread ownership
 
@@ -45,10 +27,13 @@ The worker shutdown uses a blocking sentinel enqueue followed by a timed join. I
 | Drawing, keyboard and terminal queries | app / region_queries / drawing | Main thread |
 | Region resolution and live spatial updates | DatabaseStore calling pure memory.regions | Inside main-thread lifecycle transactions |
 | Manual polygon calibration | region_calibration / Camera / DatabaseStore | Separate process launch, no model inference |
+| ReID ground-truth recording | reid_diagnostics_app / ReidDiagnostics | Separate process launch of the same pipeline; query IDs and outcomes on the main thread, query/candidate rows and crops on the worker thread |
 
 Queue submission and polling are non-blocking. This does not make the whole frame loop non-blocking: camera reads, detection, drawing, frame copies, and lifecycle database operations still take time on the main thread. CPU inference on the worker can also compete for shared compute resources.
 
 ## Identity decisions
+
+![Identity resolution across threads](assets/diagrams/worker.svg)
 
 1. Tracker ADD means temporally confirmed, not necessarily a new physical object.
 2. The coordinator rejects invalid, small, low-confidence, or insufficiently visible candidates (frame-visibility ratio of the predicted box, not an edge-touch rule) before submitting resolve work.
@@ -69,7 +54,9 @@ Continuous/interval-based capture (a flat `capture_interval_seconds` re-capturin
 - **Two-stage gating**: Stage A (cheap — crop validity, box area, detector confidence, frame visibility, sharpness) runs on the main thread before a job is ever queued, so SAM/DINO never run on every frame of a tracked object. Stage B (expensive — SAM mask score, mask occupancy, novelty against the item's existing gallery) runs in the worker after SAM/DINO; baseline candidates are exempt from novelty gating (two similar baseline views are expected), movement/settled candidates are not. A rejected candidate returns before `add_reference_if_needed` and never updates the prototype.
 - `max_references_per_item` is a hard ceiling; new references are simply refused once reached (no replacement policy yet).
 
-Verified only against 200 unit/integration tests using fakes and synthetic images; no live-camera run has occurred yet.
+Historical notes report 200 passing offline tests. Additional diagnostics tests are now present; no fresh full-suite or camera run is claimed by this documentation.
+
+The configured two-reference baseline is an intent, not a guaranteed count: feedback for the first precomputed INITIAL save currently consumes the remaining baseline budget. See the [source behavior explanation](12-project-map.md#reference-learning-is-separate-from-event-history).
 
 ## Architectural invariants and limits
 
@@ -89,3 +76,15 @@ Sources: [app](../src/project_auto/app.py), [coordinator](../src/project_auto/ev
 EventEngine passes ADD/RETURNED destination boxes, MOVED source/destination boxes, and REMOVE source evidence to existing store operations. The coordinator supplies actual frame dimensions in memory. DatabaseStore resolves centroid membership via the pure geometry module and commits region IDs, name snapshots, normalized areas, and Item.current_box/current_region_id together. REMOVED clears both live fields; no tracker or per-frame spatial writes are introduced.
 
 The normal app does not automatically run calibration. A separate region_calibration entry point uses the same Camera abstraction and YAML configuration; w/r queries use store APIs and hold highlight state only in app memory. Full contracts and flow: [regions and spatial memory](11-regions.md).
+
+## ReID diagnostic entry point
+
+`python -m project_auto.reid_diagnostics_app` calls the same `app.run_app()` with three overrides read from `configs/reid_diagnostics.yaml`: a `ReidDiagnostics` recorder, `prototype_shortlist_size: 0` (every gallery item scored) and a separate database file. The normal entry point calls `run_app()` with no arguments, so it passes no recorder and keeps the configured shortlist and database; its behaviour is unaffected.
+
+With a recorder present, the coordinator issues a `query_id` for each resolve job and records the outcome it applies (ADDED/RETURNED/ASSOC/DEFER/DEFER_CLAIMED/ERROR/DROPPED/STALE). The worker records one query row, one row per scored candidate, and raw/masked crops, so disk writes stay off the video thread. Capture jobs are not recorded. Recording failures are logged and never fail a job. Labelling is done offline by joining a hand-written ground-truth file on `query_id`.
+
+Sources: [diagnostic entry point](../src/project_auto/reid_diagnostics_app.py), [recorder](../src/project_auto/utils/reid_diagnostics.py), [diagnostic settings](../configs/reid_diagnostics.yaml).
+
+## Separate diagnostic launch
+
+`reid_diagnostics_app.py` reuses `app.run_app()` with a recorder, a separate database and a whole-gallery shortlist override from `configs/reid_diagnostics.yaml`. Normal tracking has no diagnostic recorder. The [complete map](12-project-map.md) connects every Python file to its project function; the [source index](13-source-index.md) lists every definition.

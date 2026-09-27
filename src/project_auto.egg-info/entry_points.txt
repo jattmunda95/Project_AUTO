@@ -1,2 +1,3 @@
 [console_scripts]
 project-auto = project_auto.main:main
+project-auto-diagnostics = project_auto.reid_diagnostics_app:main

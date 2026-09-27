@@ -59,6 +59,8 @@ Current-location fallback only applies to present/occluded items with neither li
 
 ## Calibration and query workflow
 
+![Separate polygon calibration and normal location queries](assets/diagrams/regions.svg)
+
 From an activated editable checkout, launch calibration separately from normal tracking:
 
 ```powershell

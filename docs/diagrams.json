@@ -1,0 +1,1551 @@
+{
+  "overview": {
+    "title": "Project AUTO: live pipeline",
+    "description": "The main thread captures, detects and tracks objects. The coordinator submits identity jobs to a worker and applies results through the event engine and store. Drawing and queries share the main thread. Diagnostic recording is a separate optional launch mode.",
+    "size": [
+      840,
+      850
+    ],
+    "nodes": [
+      {
+        "id": "app",
+        "box": [
+          20,
+          40,
+          300,
+          70
+        ],
+        "lines": [
+          "main.py → app.py",
+          "Assemble services; run frame loop"
+        ],
+        "accent": true
+      },
+      {
+        "id": "camera",
+        "box": [
+          20,
+          140,
+          300,
+          70
+        ],
+        "lines": [
+          "capture/camera.py",
+          "Camera frame"
+        ],
+        "accent": false
+      },
+      {
+        "id": "detector",
+        "box": [
+          20,
+          240,
+          300,
+          70
+        ],
+        "lines": [
+          "perception/detector.py",
+          "YOLO / OpenVINO + BoT-SORT"
+        ],
+        "accent": false
+      },
+      {
+        "id": "tracker",
+        "box": [
+          20,
+          340,
+          300,
+          70
+        ],
+        "lines": [
+          "perception/tracker.py",
+          "Presence and movement signals"
+        ],
+        "accent": false
+      },
+      {
+        "id": "coordinator",
+        "box": [
+          20,
+          460,
+          300,
+          70
+        ],
+        "lines": [
+          "events/coordinator.py",
+          "Identity and event coordination"
+        ],
+        "accent": true
+      },
+      {
+        "id": "event",
+        "box": [
+          20,
+          600,
+          300,
+          70
+        ],
+        "lines": [
+          "event_engine.py + state_machine.py",
+          "Bind item; choose lifecycle write"
+        ],
+        "accent": false
+      },
+      {
+        "id": "store",
+        "box": [
+          20,
+          730,
+          300,
+          70
+        ],
+        "lines": [
+          "store.py + models.py + regions.py",
+          "Store event and spatial memory"
+        ],
+        "accent": true
+      },
+      {
+        "id": "draw",
+        "box": [
+          440,
+          240,
+          350,
+          70
+        ],
+        "lines": [
+          "drawing.py + app.py",
+          "Detection display"
+        ],
+        "accent": false
+      },
+      {
+        "id": "queries",
+        "box": [
+          440,
+          340,
+          350,
+          70
+        ],
+        "lines": [
+          "region_queries.py",
+          "w / r: ask about items and regions"
+        ],
+        "accent": false
+      },
+      {
+        "id": "worker",
+        "box": [
+          440,
+          460,
+          350,
+          70
+        ],
+        "lines": [
+          "identification_worker.py",
+          "Run queued work on one thread"
+        ],
+        "accent": true
+      },
+      {
+        "id": "scene",
+        "box": [
+          440,
+          590,
+          350,
+          100
+        ],
+        "lines": [
+          "scene_processor.py",
+          "segmenter.py + descriptors.py",
+          "reid.py: prepare and match"
+        ],
+        "accent": false
+      },
+      {
+        "id": "db",
+        "box": [
+          440,
+          730,
+          350,
+          70
+        ],
+        "lines": [
+          "SQLite",
+          "Items • events • references • regions"
+        ],
+        "accent": false
+      }
+    ],
+    "edges": [
+      {
+        "from": "app",
+        "to": "camera"
+      },
+      {
+        "from": "camera",
+        "to": "detector"
+      },
+      {
+        "from": "detector",
+        "to": "tracker"
+      },
+      {
+        "from": "tracker",
+        "to": "coordinator"
+      },
+      {
+        "from": "detector",
+        "to": "draw",
+        "start": "right",
+        "end": "left"
+      },
+      {
+        "from": "draw",
+        "to": "queries"
+      },
+      {
+        "from": "coordinator",
+        "to": "event",
+        "label": "resolved identity / known lifecycle",
+        "label_at": [
+          175,
+          570
+        ]
+      },
+      {
+        "from": "event",
+        "to": "store"
+      },
+      {
+        "from": "store",
+        "to": "db",
+        "start": "right",
+        "end": "left"
+      },
+      {
+        "from": "coordinator",
+        "to": "worker",
+        "start": "right",
+        "end": "left",
+        "label": "jobs",
+        "label_at": [
+          380,
+          480
+        ]
+      },
+      {
+        "from": "worker",
+        "to": "coordinator",
+        "start": "top",
+        "end": "top",
+        "via": [
+          [
+            615,
+            435
+          ],
+          [
+            170,
+            435
+          ]
+        ],
+        "label": "results polled on later frames",
+        "label_at": [
+          410,
+          425
+        ]
+      },
+      {
+        "from": "worker",
+        "to": "scene"
+      },
+      {
+        "from": "scene",
+        "to": "db",
+        "label": "reference saves through store.py",
+        "label_at": [
+          615,
+          716
+        ]
+      },
+      {
+        "from": "queries",
+        "to": "db",
+        "start": "right",
+        "end": "right",
+        "via": [
+          [
+            817,
+            375
+          ],
+          [
+            817,
+            765
+          ]
+        ],
+        "dashed": true
+      }
+    ],
+    "labels": [
+      [
+        20,
+        24,
+        "MAIN THREAD"
+      ],
+      [
+        440,
+        24,
+        "DISPLAY, WORKER AND STORAGE"
+      ]
+    ]
+  },
+  "lifecycle": {
+    "title": "One object: observation to permanent memory",
+    "description": "A tracker ADD triggers identity resolution. New views create ADDED, matches to removed items create RETURNED, and present matches associate without an event. Movement and absence then update the same permanent item.",
+    "size": [
+      850,
+      790
+    ],
+    "nodes": [
+      {
+        "id": "see",
+        "box": [
+          275,
+          25,
+          300,
+          70
+        ],
+        "lines": [
+          "detector.py → tracker.py",
+          "Temporary track → confirmed ADD"
+        ],
+        "accent": false
+      },
+      {
+        "id": "identify",
+        "box": [
+          275,
+          135,
+          300,
+          70
+        ],
+        "lines": [
+          "coordinator.py → worker",
+          "scene_processor.py resolves identity"
+        ],
+        "accent": true
+      },
+      {
+        "id": "new",
+        "box": [
+          15,
+          270,
+          250,
+          70
+        ],
+        "lines": [
+          "No accepted match",
+          "New Item + ADDED"
+        ],
+        "accent": false
+      },
+      {
+        "id": "return",
+        "box": [
+          300,
+          270,
+          250,
+          70
+        ],
+        "lines": [
+          "Match to removed item",
+          "Same Item + RETURNED"
+        ],
+        "accent": false
+      },
+      {
+        "id": "assoc",
+        "box": [
+          585,
+          270,
+          250,
+          70
+        ],
+        "lines": [
+          "Match to present item",
+          "Same Item; association only"
+        ],
+        "accent": false
+      },
+      {
+        "id": "bound",
+        "box": [
+          275,
+          415,
+          300,
+          70
+        ],
+        "lines": [
+          "event_engine.py",
+          "Track ID → permanent Item.id"
+        ],
+        "accent": true
+      },
+      {
+        "id": "move",
+        "box": [
+          65,
+          550,
+          300,
+          70
+        ],
+        "lines": [
+          "tracker.py: MOVE_START",
+          "Then MOVE_END + MOVED"
+        ],
+        "accent": false
+      },
+      {
+        "id": "remove",
+        "box": [
+          485,
+          550,
+          300,
+          70
+        ],
+        "lines": [
+          "tracker.py: absent ≥ 2 seconds",
+          "REMOVE"
+        ],
+        "accent": false
+      },
+      {
+        "id": "placed",
+        "box": [
+          65,
+          680,
+          300,
+          70
+        ],
+        "lines": [
+          "store.py: MOVED",
+          "Save destination and history"
+        ],
+        "accent": false
+      },
+      {
+        "id": "removed",
+        "box": [
+          485,
+          680,
+          300,
+          70
+        ],
+        "lines": [
+          "store.py: REMOVED",
+          "Clear current location; keep history"
+        ],
+        "accent": false
+      }
+    ],
+    "edges": [
+      {
+        "from": "see",
+        "to": "identify"
+      },
+      {
+        "from": "identify",
+        "to": "new",
+        "via": [
+          [
+            425,
+            235
+          ],
+          [
+            140,
+            235
+          ]
+        ]
+      },
+      {
+        "from": "identify",
+        "to": "return"
+      },
+      {
+        "from": "identify",
+        "to": "assoc",
+        "via": [
+          [
+            425,
+            235
+          ],
+          [
+            710,
+            235
+          ]
+        ]
+      },
+      {
+        "from": "new",
+        "to": "bound",
+        "via": [
+          [
+            140,
+            385
+          ],
+          [
+            425,
+            385
+          ]
+        ]
+      },
+      {
+        "from": "return",
+        "to": "bound"
+      },
+      {
+        "from": "assoc",
+        "to": "bound",
+        "via": [
+          [
+            710,
+            385
+          ],
+          [
+            425,
+            385
+          ]
+        ]
+      },
+      {
+        "from": "bound",
+        "to": "move",
+        "via": [
+          [
+            425,
+            515
+          ],
+          [
+            215,
+            515
+          ]
+        ]
+      },
+      {
+        "from": "bound",
+        "to": "remove",
+        "via": [
+          [
+            425,
+            515
+          ],
+          [
+            635,
+            515
+          ]
+        ]
+      },
+      {
+        "from": "move",
+        "to": "placed"
+      },
+      {
+        "from": "remove",
+        "to": "removed"
+      }
+    ],
+    "labels": []
+  },
+  "worker": {
+    "title": "Identity resolution across threads",
+    "description": "The coordinator checks eligibility, queues a copied frame, and polls results. The worker prepares a masked view and matches the gallery. The coordinator applies the identity result; the worker saves accepted references and reloads the gallery.",
+    "size": [
+      840,
+      810
+    ],
+    "nodes": [
+      {
+        "id": "coord",
+        "box": [
+          20,
+          45,
+          300,
+          70
+        ],
+        "lines": [
+          "coordinator.py: handle_frame",
+          "Poll results; process signals"
+        ],
+        "accent": true
+      },
+      {
+        "id": "manager",
+        "box": [
+          20,
+          170,
+          300,
+          70
+        ],
+        "lines": [
+          "identification.py",
+          "ReferenceManager: eligible / queued"
+        ],
+        "accent": false
+      },
+      {
+        "id": "job",
+        "box": [
+          20,
+          300,
+          300,
+          70
+        ],
+        "lines": [
+          "IdentificationJob",
+          "resolve: frame copy + box + track"
+        ],
+        "accent": false
+      },
+      {
+        "id": "worker",
+        "box": [
+          475,
+          300,
+          330,
+          70
+        ],
+        "lines": [
+          "identification_worker.py",
+          "Bounded queue → process resolve"
+        ],
+        "accent": true
+      },
+      {
+        "id": "scene",
+        "box": [
+          475,
+          420,
+          330,
+          70
+        ],
+        "lines": [
+          "scene_processor.py",
+          "SAM mask, RGB crop, descriptors"
+        ],
+        "accent": false
+      },
+      {
+        "id": "reid",
+        "box": [
+          475,
+          540,
+          330,
+          70
+        ],
+        "lines": [
+          "memory/reid.py",
+          "DINOv2 embedding + gallery match"
+        ],
+        "accent": false
+      },
+      {
+        "id": "result",
+        "box": [
+          20,
+          540,
+          300,
+          70
+        ],
+        "lines": [
+          "IdentificationResult",
+          "new / existing / pending / error"
+        ],
+        "accent": false
+      },
+      {
+        "id": "event",
+        "box": [
+          20,
+          690,
+          300,
+          70
+        ],
+        "lines": [
+          "coordinator.py → event_engine.py",
+          "Apply result on main thread"
+        ],
+        "accent": false
+      },
+      {
+        "id": "save",
+        "box": [
+          475,
+          690,
+          330,
+          70
+        ],
+        "lines": [
+          "Worker → store.py",
+          "Save reference; refresh gallery"
+        ],
+        "accent": false
+      }
+    ],
+    "edges": [
+      {
+        "from": "coord",
+        "to": "manager"
+      },
+      {
+        "from": "manager",
+        "to": "job"
+      },
+      {
+        "from": "job",
+        "to": "worker",
+        "start": "right",
+        "end": "left",
+        "label": "submit()",
+        "label_at": [
+          397,
+          320
+        ]
+      },
+      {
+        "from": "worker",
+        "to": "scene"
+      },
+      {
+        "from": "scene",
+        "to": "reid"
+      },
+      {
+        "from": "reid",
+        "to": "result",
+        "start": "left",
+        "end": "right",
+        "label": "queued result",
+        "label_at": [
+          397,
+          565
+        ]
+      },
+      {
+        "from": "result",
+        "to": "event",
+        "label": "poll on a later frame",
+        "label_at": [
+          170,
+          660
+        ]
+      },
+      {
+        "from": "event",
+        "to": "save",
+        "start": "right",
+        "end": "left",
+        "label": "capture job",
+        "label_at": [
+          397,
+          710
+        ]
+      }
+    ],
+    "labels": [
+      [
+        20,
+        25,
+        "MAIN THREAD"
+      ],
+      [
+        475,
+        25,
+        "BACKGROUND WORKER"
+      ]
+    ]
+  },
+  "references": {
+    "title": "Reference learning and quality gates",
+    "description": "ReferencePolicy nominates sparse baseline, movement or settled-pose candidates. The coordinator performs cheap checks; the worker performs mask quality and applicable novelty checks. Only accepted saves update the prototype and gallery.",
+    "size": [
+      840,
+      650
+    ],
+    "nodes": [
+      {
+        "id": "policy",
+        "box": [
+          20,
+          50,
+          300,
+          70
+        ],
+        "lines": [
+          "reference_policy.py",
+          "Baseline / movement / settled pose"
+        ],
+        "accent": true
+      },
+      {
+        "id": "cheap",
+        "box": [
+          20,
+          190,
+          300,
+          70
+        ],
+        "lines": [
+          "coordinator.py + descriptors.py",
+          "Box, confidence, visibility, sharpness"
+        ],
+        "accent": false
+      },
+      {
+        "id": "queue",
+        "box": [
+          20,
+          330,
+          300,
+          70
+        ],
+        "lines": [
+          "identification.py",
+          "Eligible capture job → queue"
+        ],
+        "accent": false
+      },
+      {
+        "id": "prepare",
+        "box": [
+          470,
+          330,
+          345,
+          70
+        ],
+        "lines": [
+          "worker → scene_processor.py",
+          "SAM2 + DINOv2 or reused reference"
+        ],
+        "accent": false
+      },
+      {
+        "id": "gate",
+        "box": [
+          470,
+          470,
+          345,
+          70
+        ],
+        "lines": [
+          "identification_worker.py",
+          "Mask quality; applicable novelty"
+        ],
+        "accent": true
+      },
+      {
+        "id": "save",
+        "box": [
+          20,
+          470,
+          300,
+          70
+        ],
+        "lines": [
+          "store.py",
+          "Reference + prototype; cap of eight"
+        ],
+        "accent": false
+      }
+    ],
+    "edges": [
+      {
+        "from": "policy",
+        "to": "cheap",
+        "label": "nominate a candidate",
+        "label_at": [
+          170,
+          155
+        ]
+      },
+      {
+        "from": "cheap",
+        "to": "queue",
+        "label": "only if usable",
+        "label_at": [
+          170,
+          295
+        ]
+      },
+      {
+        "from": "queue",
+        "to": "prepare",
+        "start": "right",
+        "end": "left"
+      },
+      {
+        "from": "prepare",
+        "to": "gate"
+      },
+      {
+        "from": "gate",
+        "to": "save",
+        "start": "left",
+        "end": "right",
+        "label": "accepted",
+        "label_at": [
+          395,
+          490
+        ]
+      },
+      {
+        "from": "save",
+        "to": "policy",
+        "start": "left",
+        "end": "left",
+        "via": [
+          [
+            8,
+            505
+          ],
+          [
+            8,
+            85
+          ]
+        ],
+        "dashed": true
+      }
+    ],
+    "labels": [
+      [
+        20,
+        25,
+        "TIMING + CHEAP CHECKS"
+      ],
+      [
+        470,
+        25,
+        "EXPENSIVE CHECKS IN WORKER"
+      ],
+      [
+        160,
+        605,
+        "Accepted result feeds back to policy; worker reloads gallery."
+      ]
+    ]
+  },
+  "memory": {
+    "title": "Four tables for identity, history and place",
+    "description": "An Item has many events and reference embeddings. Regions are optional current locations of items and optional source or destination locations on events. The store owns transactions and calls pure geometry.",
+    "size": [
+      850,
+      680
+    ],
+    "nodes": [
+      {
+        "id": "store",
+        "box": [
+          275,
+          35,
+          300,
+          70
+        ],
+        "lines": [
+          "memory/store.py",
+          "Transactions and query APIs"
+        ],
+        "accent": true
+      },
+      {
+        "id": "regions",
+        "box": [
+          35,
+          195,
+          320,
+          100
+        ],
+        "lines": [
+          "REGIONS",
+          "Name • polygon • area",
+          "memory/regions.py resolves boxes"
+        ],
+        "accent": false
+      },
+      {
+        "id": "items",
+        "box": [
+          480,
+          195,
+          330,
+          100
+        ],
+        "lines": [
+          "ITEMS",
+          "Permanent ID • status • prototype",
+          "Current box and optional region"
+        ],
+        "accent": true
+      },
+      {
+        "id": "events",
+        "box": [
+          35,
+          450,
+          360,
+          100
+        ],
+        "lines": [
+          "ITEM_EVENTS",
+          "ADDED / MOVED / REMOVED / RETURNED",
+          "Boxes • times • region snapshots"
+        ],
+        "accent": false
+      },
+      {
+        "id": "refs",
+        "box": [
+          480,
+          450,
+          330,
+          100
+        ],
+        "lines": [
+          "ITEM_EMBEDDINGS",
+          "Model • embedding • descriptors",
+          "Many references for one Item"
+        ],
+        "accent": false
+      }
+    ],
+    "edges": [
+      {
+        "from": "store",
+        "to": "regions",
+        "via": [
+          [
+            425,
+            140
+          ],
+          [
+            195,
+            140
+          ]
+        ]
+      },
+      {
+        "from": "store",
+        "to": "items",
+        "via": [
+          [
+            425,
+            140
+          ],
+          [
+            645,
+            140
+          ]
+        ]
+      },
+      {
+        "from": "regions",
+        "to": "items",
+        "start": "right",
+        "end": "left",
+        "label": "current region",
+        "label_at": [
+          418,
+          227
+        ]
+      },
+      {
+        "from": "regions",
+        "to": "events",
+        "label": "source / destination",
+        "label_at": [
+          190,
+          372
+        ]
+      },
+      {
+        "from": "items",
+        "to": "refs",
+        "label": "one → many",
+        "label_at": [
+          645,
+          372
+        ]
+      },
+      {
+        "from": "items",
+        "to": "events",
+        "start": "bottom",
+        "end": "top",
+        "via": [
+          [
+            645,
+            325
+          ],
+          [
+            420,
+            325
+          ],
+          [
+            420,
+            410
+          ],
+          [
+            215,
+            410
+          ]
+        ],
+        "label": "one Item → many events",
+        "label_at": [
+          320,
+          397
+        ]
+      }
+    ],
+    "labels": [
+      [
+        170,
+        610,
+        "models.py defines tables; store.py performs persistence."
+      ]
+    ]
+  },
+  "regions": {
+    "title": "Calibrate areas, then ask about locations",
+    "description": "Region calibration is a separate camera launch that validates and stores polygons. Normal tracking uses w/r terminal queries and temporary display highlights. SQL stays in the store and geometry stays in memory/regions.py.",
+    "size": [
+      840,
+      720
+    ],
+    "nodes": [
+      {
+        "id": "cal",
+        "box": [
+          20,
+          45,
+          300,
+          70
+        ],
+        "lines": [
+          "scripts/define_regions.py",
+          "→ region_calibration.py"
+        ],
+        "accent": true
+      },
+      {
+        "id": "camera",
+        "box": [
+          20,
+          170,
+          300,
+          70
+        ],
+        "lines": [
+          "camera.py + drawing.py",
+          "Show frame; click polygon vertices"
+        ],
+        "accent": false
+      },
+      {
+        "id": "geometry",
+        "box": [
+          20,
+          295,
+          300,
+          70
+        ],
+        "lines": [
+          "memory/regions.py",
+          "Validate polygon; terminal name"
+        ],
+        "accent": false
+      },
+      {
+        "id": "write",
+        "box": [
+          20,
+          430,
+          300,
+          70
+        ],
+        "lines": [
+          "store.py: create_region",
+          "Save named polygon"
+        ],
+        "accent": false
+      },
+      {
+        "id": "normal",
+        "box": [
+          470,
+          45,
+          345,
+          70
+        ],
+        "lines": [
+          "main.py → app.py",
+          "Normal tracking window"
+        ],
+        "accent": true
+      },
+      {
+        "id": "query",
+        "box": [
+          470,
+          170,
+          345,
+          70
+        ],
+        "lines": [
+          "region_queries.py",
+          "w: item whereabouts; r: area"
+        ],
+        "accent": false
+      },
+      {
+        "id": "read",
+        "box": [
+          470,
+          295,
+          345,
+          70
+        ],
+        "lines": [
+          "store.py: read queries",
+          "Current contents and event history"
+        ],
+        "accent": false
+      },
+      {
+        "id": "highlight",
+        "box": [
+          470,
+          560,
+          345,
+          70
+        ],
+        "lines": [
+          "app.py + drawing.py",
+          "Highlight returned region IDs"
+        ],
+        "accent": false
+      },
+      {
+        "id": "db",
+        "box": [
+          245,
+          560,
+          200,
+          100
+        ],
+        "lines": [
+            "SQLite",
+            "Regions, items, events",
+          "Shared spatial memory"
+        ],
+        "accent": false
+      }
+    ],
+    "edges": [
+      {
+        "from": "cal",
+        "to": "camera"
+      },
+      {
+        "from": "camera",
+        "to": "geometry"
+      },
+      {
+        "from": "geometry",
+        "to": "write"
+      },
+      {
+        "from": "normal",
+        "to": "query"
+      },
+      {
+        "from": "query",
+        "to": "read"
+      },
+      {
+        "from": "write",
+        "to": "db",
+        "via": [
+          [
+            170,
+            535
+          ],
+          [
+            345,
+            535
+          ]
+        ]
+      },
+      {
+        "from": "read",
+        "to": "db",
+        "start": "left",
+        "end": "top",
+        "via": [
+          [
+            415,
+            330
+          ],
+          [
+            415,
+            520
+          ],
+          [
+            345,
+            520
+          ]
+        ]
+      },
+      {
+        "from": "read",
+        "to": "highlight"
+      }
+    ],
+    "labels": [
+      [
+        20,
+        24,
+        "SEPARATE CALIBRATION LAUNCH"
+      ],
+      [
+        470,
+        24,
+        "NORMAL TRACKING + QUESTIONS"
+      ]
+    ]
+  },
+  "repository": {
+    "title": "Repository roles and separate diagnostic mode",
+    "description": "The normal and diagnostic launchers share the live pipeline but use separate databases and diagnostic overrides. Research notebooks are a separate image-folder workflow. Tests validate the application; Markdown and the documentation builder produce this offline portal.",
+    "size": [
+      850,
+      800
+    ],
+    "nodes": [
+      {
+        "id": "normal",
+        "box": [
+          20,
+          50,
+          300,
+          70
+        ],
+        "lines": [
+          "main.py",
+          "Normal project-auto launch"
+        ],
+        "accent": false
+      },
+      {
+        "id": "diag",
+        "box": [
+          485,
+          50,
+          340,
+          70
+        ],
+        "lines": [
+          "reid_diagnostics_app.py",
+          "Separate diagnostic launch"
+        ],
+        "accent": true
+      },
+      {
+        "id": "app",
+        "box": [
+          255,
+          210,
+          350,
+          70
+        ],
+        "lines": [
+          "app.py + src/project_auto modules",
+          "Shared live processing pipeline"
+        ],
+        "accent": true
+      },
+      {
+        "id": "config",
+        "box": [
+          20,
+          350,
+          300,
+          70
+        ],
+        "lines": [
+          "configs/ + models/",
+          "Settings and pretrained detector"
+        ],
+        "accent": false
+      },
+      {
+        "id": "record",
+        "box": [
+          485,
+          350,
+          340,
+          70
+        ],
+        "lines": [
+          "utils/reid_diagnostics.py",
+          "Queries • scores • outcomes • crops"
+        ],
+        "accent": false
+      },
+      {
+        "id": "tests",
+        "box": [
+          20,
+          520,
+          300,
+          70
+        ],
+        "lines": [
+          "tests/",
+          "Offline checks and simulated UI"
+        ],
+        "accent": false
+      },
+      {
+        "id": "research",
+        "box": [
+          485,
+          520,
+          340,
+          70
+        ],
+        "lines": [
+          "notebooks/",
+          "Image folders → embeddings / results"
+        ],
+        "accent": false
+      },
+      {
+        "id": "docs",
+        "box": [
+          255,
+          665,
+          350,
+          70
+        ],
+        "lines": [
+          "docs/*.md + diagrams.json",
+          "build_docs.py → offline HTML / SVG"
+        ],
+        "accent": false
+      }
+    ],
+    "edges": [
+      {
+        "from": "normal",
+        "to": "app",
+        "via": [
+          [
+            170,
+            170
+          ],
+          [
+            430,
+            170
+          ]
+        ]
+      },
+      {
+        "from": "diag",
+        "to": "app",
+        "via": [
+          [
+            655,
+            170
+          ],
+          [
+            430,
+            170
+          ]
+        ],
+        "label": "overrides + separate database",
+        "label_at": [
+          650,
+          155
+        ]
+      },
+      {
+        "from": "config",
+        "to": "app",
+        "start": "top",
+        "end": "left",
+        "via": [
+          [
+            170,
+            245
+          ]
+        ]
+      },
+      {
+        "from": "app",
+        "to": "record",
+        "end": "top",
+        "via": [
+          [
+            430,
+            315
+          ],
+          [
+            655,
+            315
+          ]
+        ],
+        "label": "diagnostic mode only",
+        "label_at": [
+          640,
+          305
+        ]
+      },
+      {
+        "from": "tests",
+        "to": "app",
+        "start": "top",
+        "end": "left",
+        "via": [
+          [
+            170,
+            490
+          ],
+          [
+            8,
+            490
+          ],
+          [
+            8,
+            245
+          ]
+        ],
+        "dashed": true
+      }
+    ],
+    "labels": [
+      [
+        45,
+        480,
+        "Validation"
+      ],
+      [
+        510,
+        480,
+        "Independent experiments"
+      ],
+      [
+        255,
+        775,
+        "Generated metadata and caches do not add runtime features."
+      ]
+    ]
+  }
+}

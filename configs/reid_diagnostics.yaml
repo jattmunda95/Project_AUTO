@@ -1,0 +1,17 @@
+# Diagnostic entry point only: python -m project_auto.reid_diagnostics_app
+# The normal project-auto entry point never reads this file. Every other setting
+# comes from the normal configs/*.yaml files, so diagnostic runs measure the same
+# pipeline; only the keys below differ.
+
+# One folder per run: queries.csv, candidates.csv, outcomes.csv and crops/.
+# Resolve jobs only. Relative to the project root.
+output_dir: logs/reid_runs
+
+# Overrides reid.yaml's prototype_shortlist_size. 0 scores every gallery item,
+# so the true item's score is always recorded (intended for 6-10 test objects).
+prototype_shortlist_size: 0
+
+# Separate database so diagnostic items/references never enter the normal
+# memory. Delete this file to start a diagnostic session with an empty gallery.
+# Regions are not copied: calibrate here separately if region data is needed.
+database_path: data/diagnostics/project_auto_diagnostics.db

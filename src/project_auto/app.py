@@ -20,13 +20,7 @@ import yaml
 from project_auto.capture.camera import Camera, CameraConfig
 from project_auto.events.coordinator import IdentityCoordinator
 from project_auto.events.event_engine import EventEngine
-from project_auto.memory.reid import (
-    ASPECT_WEIGHT,
-    COLOR_WEIGHT,
-    DINO_WEIGHT,
-    ReidConfig,
-    ReidMatcher,
-)
+from project_auto.memory.reid import ReidConfig, ReidMatcher
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.detector import Detection, YoloDetector
 from project_auto.perception.scene_processor import SceneProcessor, SceneProcessorConfig
@@ -38,8 +32,18 @@ from project_auto.utils.reid_diagnostics import ReidDiagnostics
 from project_auto.region_queries import query_regions
 
 
-def run_app() -> None:
-    """Run capture, perception, lifecycle decisions, persistence, and display."""
+def run_app(
+    reid_config: ReidConfig | None = None,
+    database_path: Path | None = None,
+    diagnostics: ReidDiagnostics | None = None,
+) -> None:
+    """Run capture, perception, lifecycle decisions, persistence, and display.
+
+    The normal entry point calls this with no arguments, which uses configs/ as-is
+    and records no diagnostics. The optional arguments exist only for the separate
+    diagnostic entry point (project_auto.reid_diagnostics_app), which supplies an
+    adjusted ReID config, its own database, and a ReidDiagnostics recorder.
+    """
     project_root = Path(__file__).resolve().parents[2]
     camera_config_path = project_root / "configs" / "camera.yaml"
     perception_config_path = project_root / "configs" / "perception.yaml"
@@ -56,10 +60,9 @@ def run_app() -> None:
         table_settings = yaml.safe_load(config_file)
     with scene_processor_config_path.open(encoding="utf-8") as config_file:
         scene_processor_settings = yaml.safe_load(config_file)
-    with reid_config_path.open(encoding="utf-8") as config_file:
-        reid_settings = yaml.safe_load(config_file)
 
-    database_path = project_root / table_settings["database"]["path"]
+    if database_path is None:
+        database_path = project_root / table_settings["database"]["path"]
     store = DatabaseStore(database_path)
 
     try:
@@ -88,34 +91,14 @@ def run_app() -> None:
         )
         event_engine = EventEngine(store)
 
-        reid_config = ReidConfig.from_yaml(reid_config_path)
+        if reid_config is None:
+            reid_config = ReidConfig.from_yaml(reid_config_path)
         segmenter = SamSegmenter(SegmenterConfig.from_yaml(segmenter_config_path))
         matcher = ReidMatcher(reid_config)
         scene_processor = SceneProcessor(
             SceneProcessorConfig.from_yaml(scene_processor_config_path),
             segmenter,
             matcher,
-        )
-        diagnostics_dir = reid_settings.get("diagnostics_dir")
-        diagnostics = (
-            ReidDiagnostics(
-                root_dir=project_root / diagnostics_dir,
-                run_settings={
-                    "acceptance_threshold": reid_config.acceptance_threshold,
-                    "margin_threshold": reid_config.margin_threshold,
-                    "weights": f"{DINO_WEIGHT}/{COLOR_WEIGHT}/{ASPECT_WEIGHT}",
-                    "top_k": reid_config.top_k,
-                    "prototype_shortlist_size": reid_config.prototype_shortlist_size,
-                },
-                config_paths=(
-                    reid_config_path,
-                    scene_processor_config_path,
-                    segmenter_config_path,
-                ),
-                project_root=project_root,
-            )
-            if diagnostics_dir
-            else None
         )
         coordinator = IdentityCoordinator(
             scene_processor=scene_processor,
