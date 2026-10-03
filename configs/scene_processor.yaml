@@ -1,5 +1,9 @@
 background_color: [0, 0, 0]
 min_mask_pixels: 100
+# Fraction of the detector box's width/height added on each side before SAM
+# segmentation (matches the 5% used in the ReID tuning notebook). Changes every crop
+# ReID sees, so re-enrol the gallery after changing it.
+box_padding_fraction: 0.05
 
 # --- Reference capture (event-driven; see events/reference_policy.py) ---
 # Replaces the old continuous interval capture (reference_target_count /
@@ -41,11 +45,27 @@ min_mask_occupancy: 0.10
 # A candidate at or above this cosine similarity to an existing reference of the
 # same item adds no diversity and is rejected as redundant. Uncalibrated.
 reference_novelty_threshold: 0.93
+# A candidate for an item that already has references must have at least this cosine
+# similarity to its closest existing reference, or it is rejected as "inconsistent".
+# Applies to baseline captures too, so a wrong RETURNED match (e.g. a calculator
+# matched to a phone) is not saved into the phone's gallery. Uncalibrated starting
+# value, and it cannot catch a look-alike that DINO itself finds very similar.
+# 0.0 disables the gate.
+min_reference_consistency: 0.50
 
 # Identification runs on a background worker now (see identification_worker.py),
 # so these no longer gate the camera loop directly; they size its bounded queue
 # and its retry cooldowns.
 job_queue_max_size: 8
+
+# Caps PyTorch's intra-op thread pool for the background worker's SAM2/DINOv2
+# calls. Both PyTorch and the main thread's OpenVINO YOLO pass otherwise default
+# to sizing their own thread pool to the machine's full logical core count, so a
+# capture/resolve job landing on the same instant as a YOLO frame oversubscribes
+# the CPU and stalls the main loop. A conservative starting value on a 22-core
+# machine, not a measured optimum; raise it if worker throughput becomes the
+# bottleneck instead, and re-check frame_perf after any change.
+worker_torch_threads: 6
 
 # Cooldown before retrying a track whose last attempt produced an unusable
 # reference (bad/empty SAM mask) or a claimed-item conflict. Prevents the
@@ -59,4 +79,29 @@ queue_full_retry_seconds: 0.5
 # Cheap pre-SAM checks applied before ever submitting a job to the worker.
 # Frame-edge handling now lives in min_reference_frame_visibility above.
 min_box_area: 400
+# Upper bound as a fraction of the frame. A detection this large is scenery the
+# camera is looking at, not an object placed on it: the table surface itself, a
+# desk mat, a chair back, a monitor filling the view. Deliberately a geometric
+# test and not a class denylist -- the classes worth excluding (dining table,
+# chair) overlap with classes worth keeping (knife, scissors) too unreliably to
+# filter by name, and anything excluded by name can never be identified at all.
+# UNCALIBRATED starting guess: measure the real box fractions in a live log
+# before trusting it, and raise it if genuine close-up items are being rejected.
+# Temporarily disabled with 1.0; previous ceiling was 0.35.
+max_box_area_fraction: 1.0
 min_detector_confidence: 0.0
+
+# Item-level removal. Tracker REMOVE only retires the temporary ID.
+# Start probing on the first missing frame. Wait at least 2s before persisting
+# removal, with at most 3s extra while a plausible handoff is being checked.
+# These geometry/timing values require a live-camera validation run.
+removal:
+  absence_seconds: 2.0
+  reid_grace_seconds: 4.0
+  min_iou: 0.5
+  moving_distance_scale: 1.5
+  min_area_ratio: 0.4
+  max_candidates: 4
+  max_inflight: 2
+  settled_seconds: 1.0
+  movement_tolerance_pixels: 5.0

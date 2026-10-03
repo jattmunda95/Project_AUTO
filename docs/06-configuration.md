@@ -23,14 +23,16 @@ Values below are the working-tree YAML settings inspected for this documentation
 | iou | 0.45 | Inference overlap threshold passed to Ultralytics |
 | image_size | 960 | Inference image-size argument; not camera resolution |
 | device | cpu | Inference device argument |
-| candidate_confirmation_seconds | 2.0 | Confirmation duration before ADD signal |
+| candidate_confirmation_seconds | 2.0 | Seconds of **stillness** before the ADD signal; the clock restarts when the box centre moves beyond candidate_stillness_tolerance_pixels |
 | max_candidate_missing_frames | 15 | Cumulative misses tolerated per candidate attempt |
-| removal_timeout_seconds | 2.0 | Confirmed-track absence before REMOVE |
+| removal_timeout_seconds | 3.0 | Temporary track retirement only; permanent item removal is decided by the coordinator (see the removal block in scene_processor.yaml and [removal and handoff](14-removal-handoff.md)) |
 | movement_buffer_scale | 1.2 | Centered stable placement buffer scale |
 | movement_stop_tolerance_pixels | 5.0 | Allowed center displacement during stop confirmation |
 | movement_stopped_confirmation_seconds | 1.0 | Visible stopped duration before MOVED (and the runtime-only MOVE_END, fired the same frame) |
+| candidate_stillness_tolerance_pixels | 12.0 | Centre displacement from the still anchor beyond which a candidate counts as moving and its confirmation clock restarts. Uncalibrated; deliberately above the 5px stop tolerance because detector boxes jitter. Restarts log `DEFER reason=not_still`, at most once per confirmation window |
+| tracker_config | configs/botsort.yaml | Repo-owned BoT-SORT settings passed to Ultralytics |
 
-BoT-SORT's `botsort.yaml` name and `persist=True` are selected in detector code rather than these project YAML files. agnostic_nms is not passed explicitly; the installed Ultralytics default inspected in .venv/Lib/site-packages/ultralytics/cfg/default.yaml is False (class-aware NMS). This is an installed-library default, not a pinned project setting.
+BoT-SORT's settings are in the repo-owned [configs/botsort.yaml](../configs/botsort.yaml), selected by `tracker_config` above. It equals Ultralytics' bundled defaults except `track_buffer: 45` (frames; raised from 30 on 2 October 2026 to reduce ID churn; uncalibrated). `persist=True` is set in detector code. agnostic_nms is not passed explicitly; the installed Ultralytics default inspected in .venv/Lib/site-packages/ultralytics/cfg/default.yaml is False (class-aware NMS). This is an installed-library default, not a pinned project setting.
 
 ## Identity models
 
@@ -60,6 +62,9 @@ Small galleries bypass prototype ranking; a nonpositive shortlist setting also b
 | bad_mask_cooldown_seconds | 5.0 | Resolve retry delay after bad views, errors, or claimed-item conflicts |
 | queue_full_retry_seconds | 0.5 | Resolve retry delay after full queue |
 | min_box_area | 400 | Resolve prefilter minimum box area in square pixels |
+| max_box_area_fraction | 1.0 | Resolve prefilter ceiling as a fraction of the frame; 1.0 disables it (an uncalibrated 0.35 was tried earlier). Geometric only, never class-based |
+| worker_torch_threads | 6 | PyTorch intra-op threads for the identification worker (raised from 4 on 2 October 2026 after a measured ~3.7 s per resolve job); trades against YOLO speed, so re-check frame_perf |
+| removal: (block) | see source | Item absence, handoff grace and settling; documented in [removal and handoff](14-removal-handoff.md) |
 | min_detector_confidence | 0.0 | Additional resolve filter; detector still uses 0.18 |
 
 ### Reference capture (event-driven; `events/reference_policy.py`)

@@ -13,6 +13,7 @@ together; it does not decide identity itself.
 """
 
 from pathlib import Path
+from time import monotonic
 
 import cv2
 import yaml
@@ -20,16 +21,17 @@ import yaml
 from project_auto.capture.camera import Camera, CameraConfig
 from project_auto.events.coordinator import IdentityCoordinator
 from project_auto.events.event_engine import EventEngine
+from project_auto.events.removal_policy import RemovalConfig
 from project_auto.memory.reid import ReidConfig, ReidMatcher
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.detector import Detection, YoloDetector
 from project_auto.perception.scene_processor import SceneProcessor, SceneProcessorConfig
 from project_auto.perception.segmenter import SamSegmenter, SegmenterConfig
 from project_auto.perception.tracker import DetectionTracker
+from project_auto.region_queries import query_regions
 from project_auto.utils.drawing import draw_detections, draw_regions
 from project_auto.utils.logging import Category, log_action
 from project_auto.utils.reid_diagnostics import ReidDiagnostics
-from project_auto.region_queries import query_regions
 
 
 def run_app(
@@ -73,20 +75,17 @@ def run_app(
             candidate_confirmation_seconds=float(
                 perception_settings["candidate_confirmation_seconds"]
             ),
-            max_candidate_missing_frames=int(
-                perception_settings["max_candidate_missing_frames"]
-            ),
-            removal_timeout_seconds=float(
-                perception_settings["removal_timeout_seconds"]
-            ),
-            movement_buffer_scale=float(
-                perception_settings["movement_buffer_scale"]
-            ),
+            max_candidate_missing_frames=int(perception_settings["max_candidate_missing_frames"]),
+            removal_timeout_seconds=float(perception_settings["removal_timeout_seconds"]),
+            movement_buffer_scale=float(perception_settings["movement_buffer_scale"]),
             movement_stop_tolerance_pixels=float(
                 perception_settings["movement_stop_tolerance_pixels"]
             ),
             movement_stopped_confirmation_seconds=float(
                 perception_settings["movement_stopped_confirmation_seconds"]
+            ),
+            candidate_stillness_tolerance_pixels=float(
+                perception_settings["candidate_stillness_tolerance_pixels"]
             ),
         )
         event_engine = EventEngine(store)
@@ -109,6 +108,7 @@ def run_app(
             bad_mask_cooldown_seconds=float(scene_processor_settings["bad_mask_cooldown_seconds"]),
             queue_full_retry_seconds=float(scene_processor_settings["queue_full_retry_seconds"]),
             min_box_area=int(scene_processor_settings["min_box_area"]),
+            max_box_area_fraction=float(scene_processor_settings["max_box_area_fraction"]),
             min_detector_confidence=float(scene_processor_settings["min_detector_confidence"]),
             initial_reference_count=int(scene_processor_settings["initial_reference_count"]),
             initial_capture_spacing_frames=int(
@@ -130,7 +130,12 @@ def run_app(
             reference_novelty_threshold=float(
                 scene_processor_settings["reference_novelty_threshold"]
             ),
+            min_reference_consistency=float(
+                scene_processor_settings.get("min_reference_consistency", 0.0)
+            ),
             job_queue_max_size=int(scene_processor_settings["job_queue_max_size"]),
+            worker_torch_threads=int(scene_processor_settings["worker_torch_threads"]),
+            removal_config=RemovalConfig(**scene_processor_settings.get("removal", {})),
             diagnostics=diagnostics,
         )
 
@@ -139,10 +144,21 @@ def run_app(
             highlighted_regions = []
             highlight_frames_left = 0
             highlight_duration = int(table_settings.get("regions", {}).get("highlight_frames", 150))
+            # TODO(perf): remove once frame dropout/latency is measured (TASKS #2b);
+            # tied to the same task as freezing confidence/image_size/agnostic_nms.
+            perf_window_frames = 60
+            perf_window_started_at = monotonic()
+            perf_detect_seconds = 0.0
+            perf_track_seconds = 0.0
+            perf_coordinator_seconds = 0.0
+            perf_frames_in_window = 0
             while True:
+                frame_started_at = monotonic()
                 frame = camera.read()
                 detections = detector.detect(frame)
+                detect_finished_at = monotonic()
                 signals = tracker.update(detections)
+                track_finished_at = monotonic()
                 detections_by_track_id: dict[int, Detection] = {
                     detection.track_id: detection
                     for detection in detections
@@ -150,6 +166,28 @@ def run_app(
                 }
 
                 coordinator.handle_frame(frame, signals, detections_by_track_id)
+                coordinator_finished_at = monotonic()
+
+                perf_detect_seconds += detect_finished_at - frame_started_at
+                perf_track_seconds += track_finished_at - detect_finished_at
+                perf_coordinator_seconds += coordinator_finished_at - track_finished_at
+                perf_frames_in_window += 1
+                if perf_frames_in_window >= perf_window_frames:
+                    elapsed = monotonic() - perf_window_started_at
+                    log_action(
+                        Category.SYSTEM,
+                        event="frame_perf",
+                        fps=perf_frames_in_window / elapsed if elapsed > 0 else 0.0,
+                        detect_ms=1000 * perf_detect_seconds / perf_frames_in_window,
+                        track_ms=1000 * perf_track_seconds / perf_frames_in_window,
+                        coordinator_ms=1000 * perf_coordinator_seconds / perf_frames_in_window,
+                        frame_ms=1000 * elapsed / perf_frames_in_window,
+                    )
+                    perf_window_started_at = monotonic()
+                    perf_detect_seconds = 0.0
+                    perf_track_seconds = 0.0
+                    perf_coordinator_seconds = 0.0
+                    perf_frames_in_window = 0
 
                 debug_frame = draw_detections(frame, detections)
                 if highlight_frames_left > 0:

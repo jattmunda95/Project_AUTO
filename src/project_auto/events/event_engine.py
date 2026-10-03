@@ -44,6 +44,22 @@ class EventEngine:
             for track_id, associated_item_id in self._item_ids_by_track_id.items()
         )
 
+    def transfer_item(self, item_id: int, old_track_id: int, new_track_id: int) -> None:
+        """Transfer a ReID-verified missing item's claim without a lifecycle event."""
+        if self.item_id_for_track(old_track_id) != item_id:
+            raise ValueError("Handoff source no longer owns the item")
+        if self.item_id_for_track(new_track_id) is not None:
+            raise ValueError("Handoff destination already owns an item")
+        del self._item_ids_by_track_id[old_track_id]
+        self._item_ids_by_track_id[new_track_id] = item_id
+        log_action(
+            Category.ASSOCIATE,
+            action="handoff",
+            item=item_id,
+            old_track=old_track_id,
+            track=new_track_id,
+        )
+
     # TODO(occlusion): remaining occlusion/status-change semantics (mark_occluded/mark_present
     # transitions and when the coordinator should trigger them) are not yet defined here, and
     # no high-quality object/context evidence image is saved alongside lifecycle events.
@@ -98,7 +114,13 @@ class EventEngine:
             frame_size=self.frame_size,
         )
         self._item_ids_by_track_id[signal.track_id] = item.id
-        log_action(Category.EVENT, type="ADDED", track=signal.track_id, item=item.id, class_name=item.class_name)
+        log_action(
+            Category.EVENT,
+            type="ADDED",
+            track=signal.track_id,
+            item=item.id,
+            class_name=item.class_name,
+        )
 
         return item, added_event
 
@@ -141,12 +163,11 @@ class EventEngine:
         signal: TrackSignal,
         decision: StateDecision,
     ) -> ItemEvent | None:
-        """Persist removal for an associated item and release its track binding.
+        """Persist coordinator-confirmed item absence and release its binding.
 
-        The track itself is retiring (the tracker deletes its own record for it),
-        so its binding must not outlive it: a stale entry here would make
-        is_item_claimed report this item as claimed forever, blocking any future
-        RETURNED/associate resolution on a new track_id for the same item.
+        Temporary track retirement can precede this decision while a handoff is
+        pending. The coordinator calls here only after its item-level deadline;
+        a successful handoff instead transfers the binding without removal.
         """
         if signal.signal_type is not TrackSignalType.REMOVE:
             raise ValueError("process_remove requires a REMOVE track signal")

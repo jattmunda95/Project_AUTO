@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from unittest.mock import Mock
 
 import numpy as np
@@ -46,7 +46,9 @@ def worker(scene_processor: Mock, store: Mock) -> IdentificationWorker:
 def test_submit_returns_false_when_queue_is_full(
     worker: IdentificationWorker, scene_processor: Mock
 ) -> None:
-    job = IdentificationJob(kind="resolve", track_id=1, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4))
+    job = IdentificationJob(
+        kind="resolve", track_id=1, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4)
+    )
     entered = threading.Event()
     release = threading.Event()
 
@@ -108,7 +110,7 @@ def test_start_waits_for_gallery_loaded_on_worker(
     def start():
         try:
             worker.start()
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - collect any failure from the test thread
             errors.append(exc)
         finally:
             finished.set()
@@ -142,9 +144,13 @@ def test_submit_rejects_unstarted_and_stopped_worker(worker: IdentificationWorke
         worker.start()
 
 
-def test_process_resolve_maps_new_decision(worker: IdentificationWorker, scene_processor: Mock) -> None:
+def test_process_resolve_maps_new_decision(
+    worker: IdentificationWorker, scene_processor: Mock
+) -> None:
     scene_processor.process.return_value = IdentityDecision("new", 7, None, 0.2, reference())
-    job = IdentificationJob(kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4))
+    job = IdentificationJob(
+        kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4)
+    )
 
     result = worker._process(job)
 
@@ -156,9 +162,13 @@ def test_process_resolve_maps_new_decision(worker: IdentificationWorker, scene_p
     assert result.reference is not None
 
 
-def test_process_resolve_maps_existing_decision(worker: IdentificationWorker, scene_processor: Mock) -> None:
+def test_process_resolve_maps_existing_decision(
+    worker: IdentificationWorker, scene_processor: Mock
+) -> None:
     scene_processor.process.return_value = IdentityDecision("existing", 7, 42, 0.9, reference())
-    job = IdentificationJob(kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4))
+    job = IdentificationJob(
+        kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4)
+    )
 
     result = worker._process(job)
 
@@ -171,7 +181,9 @@ def test_process_resolve_maps_pending_decision_without_running_capture(
     worker: IdentificationWorker, scene_processor: Mock, store: Mock
 ) -> None:
     scene_processor.process.return_value = IdentityDecision("pending", 7, None, 0.0, None)
-    job = IdentificationJob(kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4))
+    job = IdentificationJob(
+        kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4)
+    )
 
     result = worker._process(job)
 
@@ -185,12 +197,17 @@ def test_resolve_job_with_query_id_records_query_candidates_and_crops(
 ) -> None:
     diagnostics = Mock()
     worker.diagnostics = diagnostics
-    candidates = (CandidateScore(42, 0.9, 0.8, 0.7, 0.95, 3), CandidateScore(9, 0.3, 0.2, 0.4, 0.9, 2))
+    candidates = (
+        CandidateScore(42, 0.9, 0.8, 0.7, 0.95, 3),
+        CandidateScore(9, 0.3, 0.2, 0.4, 0.9, 2),
+    )
     scene_processor.process.return_value = IdentityDecision(
         "existing", 7, 42, 0.9, reference(), candidates=candidates, reason="accepted"
     )
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    detection = Detection(track_id=7, class_id=41, class_name="cup", confidence=0.8, box=(2, 3, 12, 8))
+    detection = Detection(
+        track_id=7, class_id=41, class_name="cup", confidence=0.8, box=(2, 3, 12, 8)
+    )
     job = IdentificationJob(
         kind="resolve",
         track_id=7,
@@ -219,16 +236,26 @@ def test_resolve_job_with_query_id_records_query_candidates_and_crops(
 
 @pytest.mark.parametrize(
     ("decision", "reason", "label"),
-    [("new", "low_margin", "AMBIG"), ("new", "below_threshold", "NEW"), ("pending", "no_mask", "DEFER")],
+    [
+        ("new", "low_margin", "AMBIG"),
+        ("new", "below_threshold", "NEW"),
+        ("pending", "no_mask", "DEFER"),
+    ],
 )
 def test_recorded_decision_label_separates_ambiguity_from_new(
     worker: IdentificationWorker, scene_processor: Mock, decision: str, reason: str, label: str
 ) -> None:
     worker.diagnostics = Mock()
     ref = None if decision == "pending" else reference()
-    scene_processor.process.return_value = IdentityDecision(decision, 7, None, 0.0, ref, reason=reason)
+    scene_processor.process.return_value = IdentityDecision(
+        decision, 7, None, 0.0, ref, reason=reason
+    )
     job = IdentificationJob(
-        kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4), query_id="q"
+        kind="resolve",
+        track_id=7,
+        frame=np.zeros((4, 4, 3), dtype=np.uint8),
+        box=(0, 0, 4, 4),
+        query_id="q",
     )
 
     worker._process(job)
@@ -246,7 +273,9 @@ def test_nothing_is_recorded_without_a_query_id_or_for_capture_jobs(
     store.add_reference_if_needed.return_value = (True, 1)
 
     worker._process(
-        IdentificationJob(kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4))
+        IdentificationJob(
+            kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4)
+        )
     )
     worker._process(
         IdentificationJob(
@@ -261,7 +290,9 @@ def test_process_capture_with_precomputed_reference_skips_resegmenting(
     worker: IdentificationWorker, scene_processor: Mock, store: Mock
 ) -> None:
     store.add_reference_if_needed.return_value = (True, 1)
-    job = IdentificationJob(kind="capture", track_id=7, item_id=9, precomputed_reference=reference())
+    job = IdentificationJob(
+        kind="capture", track_id=7, item_id=9, precomputed_reference=reference()
+    )
 
     result = worker._process(job)
 
@@ -274,7 +305,9 @@ def test_process_capture_below_target_is_skipped_when_store_declines(
     worker: IdentificationWorker, store: Mock
 ) -> None:
     store.add_reference_if_needed.return_value = (False, 2)
-    job = IdentificationJob(kind="capture", track_id=7, item_id=9, precomputed_reference=reference())
+    job = IdentificationJob(
+        kind="capture", track_id=7, item_id=9, precomputed_reference=reference()
+    )
 
     result = worker._process(job)
 
@@ -286,7 +319,11 @@ def test_process_capture_with_bad_mask_returns_pending_without_saving(
 ) -> None:
     scene_processor.prepare_reference.return_value = None
     job = IdentificationJob(
-        kind="capture", track_id=7, item_id=9, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4)
+        kind="capture",
+        track_id=7,
+        item_id=9,
+        frame=np.zeros((4, 4, 3), dtype=np.uint8),
+        box=(0, 0, 4, 4),
     )
 
     result = worker._process(job)
@@ -299,7 +336,9 @@ def test_a_raising_job_yields_an_error_result_instead_of_crashing_the_worker(
     worker: IdentificationWorker, scene_processor: Mock
 ) -> None:
     scene_processor.process.side_effect = RuntimeError("boom")
-    job = IdentificationJob(kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4))
+    job = IdentificationJob(
+        kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4)
+    )
 
     result = worker._process_safely(job)
 
@@ -311,7 +350,9 @@ def test_worker_thread_processes_a_job_end_to_end_and_shuts_down_cleanly(
     worker: IdentificationWorker, scene_processor: Mock
 ) -> None:
     scene_processor.process.return_value = IdentityDecision("new", 7, None, 0.0, reference())
-    job = IdentificationJob(kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4))
+    job = IdentificationJob(
+        kind="resolve", track_id=7, frame=np.zeros((4, 4, 3), dtype=np.uint8), box=(0, 0, 4, 4)
+    )
 
     worker.start()
     try:
@@ -332,3 +373,57 @@ def test_stop_is_idempotent_and_does_not_hang(worker: IdentificationWorker) -> N
     worker.start()
     worker.stop(timeout=2.0)
     worker.stop(timeout=2.0)  # must not raise or block
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_worker_echoes_job_id_on_success_and_error(worker, scene_processor, raises):
+    if raises:
+        scene_processor.process.side_effect = RuntimeError("failed view")
+    else:
+        scene_processor.process.return_value = IdentityDecision("pending", 7, None, 0.0, None)
+    job = IdentificationJob("resolve", 7, frame=np.zeros((4, 4, 3)), box=(0, 0, 4, 4), job_id=123)
+    assert worker._process_safely(job).job_id == 123
+
+
+def test_priority_handoff_runs_after_active_job_before_waiting_regular_job(worker, scene_processor):
+    entered = threading.Event()
+    release = threading.Event()
+    order = []
+
+    def process(frame, box, track_id, gallery):
+        order.append(track_id)
+        if track_id == 1:
+            entered.set()
+            assert release.wait(5)
+        return IdentityDecision("pending", track_id, None, 0.0, None)
+
+    scene_processor.process.side_effect = process
+    worker.start()
+    try:
+
+        def job(track_id, priority=False):
+            return IdentificationJob(
+                "resolve",
+                track_id,
+                frame=np.zeros((4, 4, 3)),
+                box=(0, 0, 4, 4),
+                priority=priority,
+                job_id=track_id,
+            )
+
+        assert worker.submit(job(1))
+        assert entered.wait(2)
+        assert worker.submit(job(2))
+        assert worker.submit(job(3, True))
+        release.set()
+        results = []
+        deadline = time.monotonic() + 3
+        while len(results) < 3 and time.monotonic() < deadline:
+            results.extend(worker.poll_results())
+            if len(results) < 3:
+                time.sleep(0.01)
+        assert order == [1, 3, 2]
+        assert [result.job_id for result in results] == [1, 3, 2]
+    finally:
+        release.set()
+        worker.stop(2)

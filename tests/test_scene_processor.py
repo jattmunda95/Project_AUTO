@@ -112,9 +112,12 @@ def test_process_returns_pending_without_matching_when_unusable(
     matcher.match_candidate.assert_not_called()
 
 
-def test_process_passes_match_candidates_and_reason_through(
+def test_process_defers_as_pending_on_ambiguous_low_margin_match(
     processor: SceneProcessor, segmenter: Mock, matcher: Mock, frame: np.ndarray
 ) -> None:
+    """A low-margin tie between two-or-more plausible items must not silently
+    become a wrong duplicate; retry later with the existing PENDING cooldown
+    instead of falling through to NEW (see scene_processor.py's TODO(UI))."""
     box = (0, 0, 4, 4)
     segmenter.segment.return_value = [Segmentation(box, full_mask(box, frame.shape[:2]), 0.9)]
     candidates = (CandidateScore(42, 0.6, 0.6, None, None, 1),)
@@ -124,9 +127,28 @@ def test_process_passes_match_candidates_and_reason_through(
 
     result = processor.process(frame, box, source_track_id=3, gallery=[])
 
-    assert result.decision == "new"
+    assert result.decision == "pending"
+    assert result.item_id is None
     assert result.candidates == candidates
     assert result.reason == "low_margin"
+
+
+def test_process_returns_new_when_nothing_clears_acceptance_threshold(
+    processor: SceneProcessor, segmenter: Mock, matcher: Mock, frame: np.ndarray
+) -> None:
+    """A genuine non-match (no ambiguity, nothing close) still becomes NEW."""
+    box = (0, 0, 4, 4)
+    segmenter.segment.return_value = [Segmentation(box, full_mask(box, frame.shape[:2]), 0.9)]
+    candidates = (CandidateScore(42, 0.1, 0.1, None, None, 1),)
+    matcher.match_candidate.return_value = ReidMatch(
+        None, 0.1, False, candidates=candidates, decision_reason="below_threshold"
+    )
+
+    result = processor.process(frame, box, source_track_id=3, gallery=[])
+
+    assert result.decision == "new"
+    assert result.candidates == candidates
+    assert result.reason == "below_threshold"
 
 
 def test_process_returns_existing_on_accepted_match(

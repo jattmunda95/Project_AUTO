@@ -43,6 +43,9 @@ class SceneProcessorConfig:
 
     background_color: tuple[int, int, int]  # RGB
     min_mask_pixels: int
+    # Fraction of the box's width/height added on each side before segmentation, so a
+    # tight detector box does not clip the object's edges. 0.0 disables it.
+    box_padding_fraction: float = 0.0
 
     @classmethod
     def from_yaml(cls, config_path: Path) -> SceneProcessorConfig:
@@ -52,6 +55,7 @@ class SceneProcessorConfig:
         return cls(
             background_color=(int(red), int(green), int(blue)),
             min_mask_pixels=int(config["min_mask_pixels"]),
+            box_padding_fraction=float(config.get("box_padding_fraction", 0.0)),
         )
 
 
@@ -134,7 +138,10 @@ class SceneProcessor:
         source_track_id: int | None,
     ) -> tuple[PreparedReference | None, str]:
         """prepare_reference plus the unusable-view reason ("" when usable)."""
-        segmentation = self._segmenter.segment(frame, [box])[0]
+        pad_x = int(round((box[2] - box[0]) * self.config.box_padding_fraction))
+        pad_y = int(round((box[3] - box[1]) * self.config.box_padding_fraction))
+        padded_box = (box[0] - pad_x, box[1] - pad_y, box[2] + pad_x, box[3] + pad_y)
+        segmentation = self._segmenter.segment(frame, [padded_box])[0]
         if segmentation is None:
             log_action(Category.REJECT, track=source_track_id, box=box, reason="no_mask")
             return None, "no_mask"
@@ -170,7 +177,9 @@ class SceneProcessor:
         reference = PreparedReference(
             crop=image,
             embedding=embedding,
-            aspect_ratio=compute_aspect_ratio(segmentation.box),
+            # Measured on the detector box, not the padded one, so it stays a property
+            # of the object regardless of the padding setting.
+            aspect_ratio=compute_aspect_ratio(box),
             color_histogram=color_histogram,
             sam_score=float(segmentation.score),
             mask_occupancy=(mask_pixels / box_area) if box_area > 0 else 0.0,
@@ -212,14 +221,21 @@ class SceneProcessor:
             color_histogram=reference.color_histogram,
             source_track_id=source_track_id,
         )
-        # TODO(UI): match.accepted is False both when nothing looked close (a
-        # genuine NEW item) and when a margin_threshold tie left two-or-more
-        # plausible items (see reid.py's TODO). Once the app has a UI, the
-        # margin-failure case should become its own "unknown" IdentityDecision
-        # carrying the tied item_ids, so a user can disambiguate, instead of
-        # both cases being flattened into "new" here.
+        # A margin_threshold tie (low_margin) means two-or-more items are plausible,
+        # not that none are. Without a UI to ask a human, treat it as PENDING rather
+        # than committing to a wrong duplicate: the coordinator already retries a
+        # PENDING track on its next visible frame with a cooldown, giving a later,
+        # more decisive view a real chance to disambiguate instead of immediately
+        # creating a new permanent item. See reid.py's TODO(UI) for the eventual
+        # UI-surfaced "unknown, pick one of these items" version of this decision.
         # match_candidate already logged the MATCH/AMBIG/NEW decision with full scores.
-        decision: IdentityDecisionType = "existing" if match.accepted else "new"
+        decision: IdentityDecisionType
+        if match.accepted:
+            decision = "existing"
+        elif match.decision_reason == "low_margin":
+            decision = "pending"
+        else:
+            decision = "new"
         return IdentityDecision(
             decision=decision,
             source_track_id=source_track_id,

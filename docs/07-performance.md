@@ -38,6 +38,12 @@ Prototype shortlisting still compares against gallery prototypes and sorts ranke
 
 These observations are source-based limitations, not measurements or fixes made by this documentation task.
 
+## Measured worker throughput (2 October 2026)
+
+Diagnostic run 20261002T085810Z recorded five consecutive resolve jobs completing 3.88, 3.72, 3.76 and 3.62 seconds apart with `worker_torch_threads: 4` and a non-empty queue. That is roughly 3.7 s of SAM2 + DINOv2 CPU time per job, one job at a time. Probe jobs submitted a fraction of a second apart therefore waited roughly 4 to 11 seconds for an answer (estimated from submission frame index at about 21 fps; not directly timed). This is longer than the 2 s candidate grace and the 6 s item deadline, which is why a correct handoff match could arrive after its item was removed (see [removal and handoff](14-removal-handoff.md)).
+
+`worker_torch_threads` was then raised from 4 to 6. The operator reported the worker was much faster; this has not been measured. Re-check the spacing between result timestamps and the main loop's frame_perf, since more worker threads compete with the OpenVINO detector for CPU.
+
 ## Proposed benchmark protocol
 
 Use an isolated database and record the code revision, exact package versions, CPU/RAM, power mode, camera/backend, negotiated resolution/rate, model assets, and all YAML settings. Separate cold startup/download/export from a warmed steady-state run.

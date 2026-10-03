@@ -6,16 +6,22 @@ result application can be driven deterministically, one step at a time.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from unittest.mock import Mock
+
 import numpy as np
 import pytest
 from PIL import Image
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
-from unittest.mock import Mock
 
 from project_auto.events.coordinator import IdentityCoordinator
 from project_auto.events.event_engine import EventEngine
-from project_auto.events.identification import IdentificationJob, IdentificationResult, IdentificationState
+from project_auto.events.identification import (
+    IdentificationJob,
+    IdentificationResult,
+    IdentificationState,
+)
 from project_auto.events.reference_policy import CandidateKind, ReferencePolicyState
 from project_auto.memory.models import Base, ItemStatus
 from project_auto.memory.store import DatabaseStore
@@ -52,7 +58,21 @@ class FakeWorker:
         results, self._pending_results = self._pending_results, []
         return results
 
+    def promote(self, job_id: int) -> bool:
+        return any(job.job_id == job_id for job in self._queued)
+
     def push_result(self, result: IdentificationResult) -> None:
+        if result.job_id is None:
+            job = next(
+                (
+                    job
+                    for job in reversed(self.submitted)
+                    if job.track_id == result.track_id and job.kind == result.kind
+                ),
+                None,
+            )
+            if job is not None:
+                result = replace(result, job_id=job.job_id)
         self._pending_results.append(result)
 
 
@@ -139,7 +159,9 @@ def frame() -> np.ndarray:
     return np.zeros((480, 640, 3), dtype=np.uint8)
 
 
-def test_worker_is_started_on_construction(coordinator: IdentityCoordinator, worker: FakeWorker) -> None:
+def test_worker_is_started_on_construction(
+    coordinator: IdentityCoordinator, worker: FakeWorker
+) -> None:
     assert worker.started is True
 
 
@@ -223,7 +245,7 @@ def test_new_result_creates_item_and_queues_the_first_reference_capture(
     worker.push_result(
         IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
 
     assert store.count_items() == 1
     item = store.list_present_items()[0]
@@ -248,7 +270,9 @@ def test_pending_result_defers_the_track_instead_of_retrying_immediately(
     assert len(worker.submitted) == 1
 
 
-def test_deferred_track_is_resubmitted_only_after_its_cooldown(store: DatabaseStore, worker: FakeWorker) -> None:
+def test_deferred_track_is_resubmitted_only_after_its_cooldown(
+    store: DatabaseStore, worker: FakeWorker
+) -> None:
     fake_time = [0.0]
     event_engine = EventEngine(store)
     coordinator = IdentityCoordinator(
@@ -314,9 +338,11 @@ def test_existing_match_against_removed_item_returns_it(
     coordinator.handle_frame(frame(), [add_signal(7)], {})
 
     worker.push_result(
-        IdentificationResult(kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference())
+        IdentificationResult(
+            kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference()
+        )
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
 
     saved_item = store.get_item(item.id)
     assert saved_item is not None
@@ -331,9 +357,11 @@ def test_existing_match_against_present_item_only_associates(
     coordinator.handle_frame(frame(), [add_signal(7)], {})
 
     worker.push_result(
-        IdentificationResult(kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference())
+        IdentificationResult(
+            kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference()
+        )
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
 
     assert store.get_item_history(item.id) == []
     assert coordinator.event_engine.item_id_for_track(7) == item.id
@@ -345,15 +373,19 @@ def test_double_claim_on_same_item_defers_the_second_track(
     item = store.create_item("cup", status=ItemStatus.PRESENT)
     coordinator.handle_frame(frame(), [add_signal(7)], {})
     worker.push_result(
-        IdentificationResult(kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference())
+        IdentificationResult(
+            kind="resolve", track_id=7, status="existing", item_id=item.id, reference=reference()
+        )
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
 
     coordinator.handle_frame(frame(), [add_signal(8)], {})
     worker.push_result(
-        IdentificationResult(kind="resolve", track_id=8, status="existing", item_id=item.id, reference=reference())
+        IdentificationResult(
+            kind="resolve", track_id=8, status="existing", item_id=item.id, reference=reference()
+        )
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7), 8: make_detection(8)})
 
     assert coordinator.event_engine.item_id_for_track(8) is None
     assert coordinator._reference_manager.state(8) is IdentificationState.DEFERRED
@@ -382,7 +414,7 @@ def test_capture_job_is_not_duplicated_while_one_is_outstanding(
         IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
     )
     # Applying the "new" result itself queues the first capture job.
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     capture_jobs = [job for job in worker.submitted if job.kind == "capture"]
     assert len(capture_jobs) == 1
 
@@ -397,7 +429,9 @@ def test_capture_job_is_not_duplicated_while_one_is_outstanding(
     # carries no candidate_kind), so the still-owed baseline reference is nominated.
     item_id = store.list_present_items()[0].id
     worker.push_result(
-        IdentificationResult(kind="capture", track_id=7, status="captured", item_id=item_id, reference=reference())
+        IdentificationResult(
+            kind="capture", track_id=7, status="captured", item_id=item_id, reference=reference()
+        )
     )
     coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     capture_jobs = [job for job in worker.submitted if job.kind == "capture"]
@@ -412,7 +446,7 @@ def test_static_item_stops_capturing_once_its_baseline_is_complete(
     worker.push_result(
         IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     item_id = store.list_present_items()[0].id
 
     # Baseline reference 1 is the resolve embedding; completing reference 2 ends
@@ -444,7 +478,7 @@ def test_move_start_arms_capture_and_is_never_persisted_as_an_event(
     worker.push_result(
         IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     item_id = store.list_present_items()[0].id
     worker.push_result(
         IdentificationResult(
@@ -481,7 +515,7 @@ def test_movement_candidates_are_bounded_per_movement_event(
     worker.push_result(
         IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     item_id = store.list_present_items()[0].id
     coordinator.handle_frame(frame(), [move_start_signal(7)], {})
 
@@ -515,7 +549,7 @@ def test_move_end_nominates_exactly_one_final_candidate_then_idles(
     worker.push_result(
         IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     item_id = store.list_present_items()[0].id
     worker.push_result(
         IdentificationResult(
@@ -572,7 +606,7 @@ def test_moved_signal_after_identity_resolves_is_recorded_normally(
     worker.push_result(
         IdentificationResult(kind="resolve", track_id=7, status="new", reference=reference())
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     item_id = store.list_present_items()[0].id
 
     coordinator.handle_frame(frame(), [moved_signal(7)], {7: make_detection(7)})
@@ -615,9 +649,13 @@ def test_applied_outcomes_are_recorded_against_their_query(
             kind="resolve", track_id=7, status="new", reference=reference(), query_id="q1"
         )
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {7: make_detection(7)})
     item_id = store.list_present_items()[0].id
     coordinator.handle_frame(frame(), [remove_signal(7)], {})
+
+    # Tracker retirement starts/continues item absence; it no longer writes REMOVED.
+    coordinator.clock.return_value = 2.0
+    coordinator.handle_frame(frame(), [], {})
 
     coordinator.handle_frame(frame(), [add_signal(8)], {})
     worker.push_result(
@@ -625,9 +663,11 @@ def test_applied_outcomes_are_recorded_against_their_query(
             kind="resolve", track_id=8, status="existing", item_id=item_id, query_id="q2"
         )
     )
-    coordinator.handle_frame(frame(), [], {})
+    coordinator.handle_frame(frame(), [], {8: make_detection(8)})
 
-    worker.push_result(IdentificationResult(kind="resolve", track_id=99, status="new", query_id="q3"))
+    worker.push_result(
+        IdentificationResult(kind="resolve", track_id=99, status="new", query_id="q3")
+    )
     coordinator.handle_frame(frame(), [], {})
 
     assert [call.args for call in diagnostics.record_outcome.call_args_list] == [
@@ -635,3 +675,86 @@ def test_applied_outcomes_are_recorded_against_their_query(
         ("q2", item_id, "RETURNED"),
         ("q3", None, "STALE"),
     ]
+
+
+# --- Scenery rejection and track-level class voting (Phase A step 2) ---------
+
+
+def test_a_box_covering_most_of_the_frame_is_rejected_as_scenery(
+    store: DatabaseStore, worker: FakeWorker
+) -> None:
+    coordinator = IdentityCoordinator(
+        scene_processor=Mock(),
+        event_engine=EventEngine(store),
+        store=store,
+        reid_model_name="test-model",
+        max_references_per_item=2,
+        max_box_area_fraction=0.35,
+        clock=Mock(return_value=0.0),
+        worker=worker,
+    )
+    # 500x400 of a 640x480 frame: 65% of the view, i.e. the table, not an object.
+    table = TrackSignal(
+        TrackSignalType.ADD,
+        7,
+        make_detection(7, box=(10, 10, 510, 410)),
+    )
+
+    coordinator.handle_frame(frame(), [table], {})
+
+    assert worker.submitted == []
+    assert coordinator._reference_manager.reason(7) == "box_too_large"
+
+
+def test_a_normal_object_is_unaffected_by_the_size_ceiling(
+    store: DatabaseStore, worker: FakeWorker
+) -> None:
+    coordinator = IdentityCoordinator(
+        scene_processor=Mock(),
+        event_engine=EventEngine(store),
+        store=store,
+        reid_model_name="test-model",
+        max_references_per_item=2,
+        max_box_area_fraction=0.35,
+        clock=Mock(return_value=0.0),
+        worker=worker,
+    )
+
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    assert len(worker.submitted) == 1
+
+
+def test_the_size_ceiling_is_disabled_at_one(store: DatabaseStore, worker: FakeWorker) -> None:
+    coordinator = IdentityCoordinator(
+        scene_processor=Mock(),
+        event_engine=EventEngine(store),
+        store=store,
+        reid_model_name="test-model",
+        max_references_per_item=2,
+        max_box_area_fraction=1.0,
+        clock=Mock(return_value=0.0),
+        worker=worker,
+    )
+    whole_frame = TrackSignal(TrackSignalType.ADD, 7, make_detection(7, box=(0, 0, 640, 480)))
+
+    coordinator.handle_frame(frame(), [whole_frame], {})
+
+    assert len(worker.submitted) == 1
+
+
+def test_a_flickering_class_label_never_withholds_identification(
+    coordinator: IdentityCoordinator, worker: FakeWorker
+) -> None:
+    # Identification is class-agnostic because detector labels are unreliable: a
+    # track whose label keeps flipping (a knife read as scissors and back) must
+    # still be identified normally.
+    for class_name in ("knife", "scissors", "knife", "scissors"):
+        detection = Detection(
+            track_id=7, class_id=43, class_name=class_name, confidence=0.9, box=(10, 20, 110, 220)
+        )
+        coordinator.handle_frame(frame(), [], {7: detection})
+
+    coordinator.handle_frame(frame(), [add_signal(7)], {})
+
+    assert len(worker.submitted) == 1

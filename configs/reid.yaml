@@ -11,6 +11,12 @@ acceptance_threshold: 0.55
 # The best-scoring item must beat the runner-up by at least this much to be
 # accepted, guarding against accepting a weak winner when two items score
 # nearly the same. Also an unvalidated starting estimate.
-margin_threshold: 0.15
+# Lowered from 0.15 to 0.05 (27 September 2026): 0.15 was rejecting confident,
+# correct same-item matches on a thin early gallery (observed margin=0.0671 on
+# a genuine repeat match) as AMBIG, which now defers (scene_processor.py) rather
+# than creating a duplicate, so a too-strict margin mainly cost correct matches
+# a retry, not safety. Interim relaxation, not a calibrated value; retune with
+# acceptance_threshold together against labelled runs (see TASKS.md item 5).
+margin_threshold: 0.05
 top_k: 3
 prototype_shortlist_size: 3

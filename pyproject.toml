@@ -18,6 +18,13 @@ reid = [
     "transformers",
     "Pillow",
 ]
+# Tooling the Verification section of AGENTS.md assumes is present: the test
+# runner every test here already needs, and the linter [tool.ruff] below has
+# been configured for all along without ever being installed.
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
 
 [project.scripts]
 project-auto = "project_auto.main:main"

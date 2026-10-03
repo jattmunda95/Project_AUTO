@@ -123,9 +123,32 @@ class ReidMatcher:
         self._model.to(config.device)
         self._model.eval()
 
+    @staticmethod
+    def _pad_to_square(image: Image.Image, fill: tuple[int, int, int]) -> Image.Image:
+        """Centre the image on a square canvas so no part of it is cropped away.
+
+        The DINOv2 processor resizes the shortest edge to 256 and then centre-crops
+        224x224, which for an elongated crop (a phone, a pen) discards the ends of the
+        object and makes the embedding depend on its orientation. Padding with the
+        background fill first keeps the whole object visible.
+        """
+        side = max(image.size)
+        if image.width == image.height:
+            return image
+        canvas = Image.new("RGB", (side, side), fill)
+        canvas.paste(image, ((side - image.width) // 2, (side - image.height) // 2))
+        return canvas
+
     @torch.inference_mode()
-    def create_embedding(self, image: Image.Image) -> NDArray:
-        """Return a normalized embedding vector for one object crop."""
+    def create_embedding(
+        self, image: Image.Image, pad_color: tuple[int, int, int] = (0, 0, 0)
+    ) -> NDArray:
+        """Return a normalized embedding vector for one object crop.
+
+        pad_color should match the background fill applied by scene_processor
+        (configs/scene_processor.yaml background_color) so padding looks like background.
+        """
+        image = self._pad_to_square(image.convert("RGB"), pad_color)
         inputs = self._processor(images=image, return_tensors="pt")
         inputs = {name: tensor.to(self.config.device) for name, tensor in inputs.items()}
 
@@ -320,6 +343,9 @@ class ReidMatcher:
                 best_item=best_item_id,
                 score=best_score,
                 threshold=self.config.acceptance_threshold,
+                dino=best_dino,
+                color=best_color,
+                aspect=best_aspect,
             )
 
         if accepted:

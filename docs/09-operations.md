@@ -87,6 +87,18 @@ After reinstalling the editable package, `project-auto-diagnostics` is equivalen
 
 Each launch creates `logs/reid_runs/<run_id>/` with queries.csv, candidates.csv, outcomes.csv and crops/. Label offline: open queries.csv beside the crops folder and fill in a ground_truth.csv (query_id, true_object, expected_outcome NEW/SAME, label_quality clear/partial/unsure, notes) plus an objects.csv mapping each object name to the item_id created when it was first enrolled. The first sighting of an object in a fresh diagnostic database is NEW; later sightings are SAME. Both `logs/` and `data/diagnostics/` are git-ignored.
 
+### Enrolment, snapshots and restoring between blocks
+
+Run these with the diagnostics app stopped unless stated. `scripts/reid_snapshot.py` reads the database path from reid_diagnostics.yaml and keeps snapshots in a `snapshots/` folder beside it.
+
+1. Delete `data/diagnostics/project_auto_diagnostics.db` for an empty gallery. Use 6 to 10 test objects.
+2. Start `python -m project_auto.reid_diagnostics_app`. Enrol objects one at a time: place one, wait for ADDED and its two baseline CAPTURE lines, remove it and wait for REMOVED. An object is only added after it has been still for the confirmation time, so hold nothing in the frame.
+3. Stop the app, then `python scripts/reid_snapshot.py backup post_enrolment`. It uses SQLite's backup API because the store runs in WAL mode and a plain file copy loses recent writes.
+4. Run scenario blocks (S0 to S12 in TASKS.md, item 5). Before each isolated block S1 to S9, stop the app and run `python scripts/reid_snapshot.py restore post_enrolment`; restore first saves the overwritten database as `_before_restore`. `list` shows snapshots.
+5. Label offline in Excel, then run the (not yet written) join and analysis script.
+
+outcomes.csv now also records handoff outcomes (HANDOFF, DEFER_HANDOFF, STALE, DROPPED). Early handoff probes are recorded as queries too, so label only the ones you intend to analyse. The raw and masked crops show exactly what ReID saw; on 2 October they showed one phone appearing as screen-off, screen-on and rear-camera views, and a hand being added as an item. The S0 to S12 operator checklist and the analysis script are still not written.
+
 ## Missing-column startup incident and recovery
 
 On 14 September, the identification worker failed during initial gallery loading with sqlite3.OperationalError: no such column: item_embeddings.aspect_ratio. Inspection found eight absent nullable columns: embedding aspect_ratio/color_histogram, item current_region_id/current_box, and event source_region_id/destination_region_id/source_box_area_fraction/destination_box_area_fraction. The regions table already existed. The earlier model-download warnings were not the exception shown in this traceback.

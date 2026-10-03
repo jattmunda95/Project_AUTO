@@ -1,5 +1,25 @@
 # Project AUTO Context
 
+## Removal pipeline update — 2 October 2026
+
+Permanent item removal is now owned by `events/removal_policy.py` and the coordinator.
+Tracker REMOVE only retires a temporary ID. The coordinator observes bound items each
+frame in memory, starts absence on the first missing frame, and probes plausible replacement
+IDs before their normal ADD confirmation. Geometry nominates candidates; the existing
+gallery ReID acceptance/margin decision verifies identity. A verified handoff transfers
+the binding without REMOVED/RETURNED and reconciles a settled relocation as MOVED.
+
+`scene_processor.yaml -> removal` configures 2s absence plus at most 3s extra while
+a plausible check is pending, overlap/motion geometry, four candidate IDs per missing
+episode and two outstanding handoff jobs. The worker has two reserved priority queue
+slots in addition to the regular eight, with regular work served after two urgent jobs.
+Jobs carry runtime IDs so stale completions cannot affect a newer job on a reused track ID.
+Identity results also require a currently visible detection before creating or returning items.
+
+Verified with 291 offline tests on 2 October; live camera validation and threshold calibration
+remain required. No schema change. See [the full design and validation checklist](../../docs/14-removal-handoff.md).
+This update supersedes the older tracker-timeout-to-removal descriptions below.
+
 Source-reviewed architecture handoff: 26 September 2026 (ReID diagnostic entry point; builds on 23 September Reference Capture V2 and action-classified logging). Detailed contracts live in the [modular docs](../../docs/README.md), especially [architecture](../../docs/02-architecture.md), [data](../../docs/05-data.md), and [regions](../../docs/11-regions.md). TASKS holds current priorities and historical verification.
 
 ## MVP definition
@@ -56,7 +76,7 @@ SAM/DINO matching and reference saves run on one background worker. The coordina
 
 ## Tracking and identity
 
-Candidate confirmation takes two seconds with at most 15 cumulative missing frames per attempt; the 16th miss retires that attempt. Stable placement uses a 1.2x centered buffer. Exiting it emits a runtime-only `MOVE_START` signal (arms reference capture, see below; never persisted). A centroid must then remain within five pixels for one visible second before `MOVE_END` (also runtime-only) fires together with the persisted `MOVED` event in the same frame. Stable or moving tracks absent for two seconds emit REMOVE. Only detections with temporary track IDs enter this lifecycle.
+Candidate confirmation takes two seconds of stillness (the clock restarts when the candidate's box centre moves more than candidate_stillness_tolerance_pixels, so a hand or carried object is not added until put down) with at most 15 cumulative missing frames per attempt; the 16th miss retires that attempt. Stable placement uses a 1.2x centered buffer. Exiting it emits a runtime-only `MOVE_START` signal (arms reference capture, see below; never persisted). A centroid must then remain within five pixels for one visible second before `MOVE_END` (also runtime-only) fires together with the persisted `MOVED` event in the same frame. Stable or moving tracks absent for two seconds emit REMOVE. Only detections with temporary track IDs enter this lifecycle.
 
 ADD is temporal confirmation, not proof of new identity. The coordinator submits a quality-prefiltered resolve job. SceneProcessor retains True foreground SAM pixels, computes descriptors before background replacement, and prepares the RGB crop and normalized DINO embedding. NEW creates an Item/ADDED; a matched removed item produces RETURNED; a matched PRESENT/OCCLUDED item associates without an event. Removal releases the track binding after persistence. Unusable views defer; unresolved MOVED signals are currently dropped rather than replayed.
 
@@ -95,3 +115,7 @@ create_all creates tables but never adds missing columns. The observed startup f
 The region implementation run passed 160 tests, including geometry, transactional location transitions, removal/deletion preservation, query fallback, and simulated calibration input. Earlier notes report successful live ReID scenarios. Physical-camera region calibration, current weighted-score accuracy, and performance at conf=0.18/imgsz=960 are not yet validated here. Installed Ultralytics defaults agnostic_nms to False; the project does not explicitly override it.
 
 Main follow-ups: confirm database provenance/schema, live region lifecycle checks, a first labelled diagnostic run plus the join/analysis script for threshold calibration, structured logging, measured frame dropout/latency, worker startup failure visibility, capture-cap scheduling, generation-aware stale-result protection, complete occlusion semantics, and saved evidence files. LLM UI, world coordinates, polygon versions and materialized region statistics remain deferred.
+
+## Class-agnostic identification and tracker configuration (2 October 2026)
+
+Detector class labels are unreliable: one phone was labelled cell phone, mouse and apple depending on which face showed. No class denylist, class gate or class vote may decide whether a track is identified, added or removed; `Item.class_name` is descriptive text captured at creation only. Scenery and hands are handled by geometry, behaviour (stillness before ADD) and, later, appearance negatives from the ask-and-answer path. BoT-SORT settings are the repo-owned `configs/botsort.yaml` (Ultralytics defaults except `track_buffer: 45`). The ReID worker needs about 3.7 s per resolve job (4 threads, before the raise to 6), which bounds how many handoff probes can complete inside the removal deadlines.

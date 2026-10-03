@@ -3,6 +3,9 @@
 Subfunctions:
 - Index detections by temporary source-track ID and maintain candidate/confirmed state.
 - Confirm persistent candidates and emit the current one-time ADD confirmation signal.
+  A candidate confirms only after it has been still for the full confirmation time: a
+  box that moves beyond the stillness tolerance restarts the clock, so a hand or a
+  carried object is not added until it is put down.
 - Detect stable placement, movement, stopping, disappearance, and removal.
 - Return lifecycle signals to app.py without database writes or image inference.
 
@@ -19,6 +22,7 @@ from time import monotonic
 from typing import Callable
 
 from project_auto.perception.detector import Detection
+from project_auto.utils.logging import Category, log_action
 
 
 def _utc_now() -> datetime:
@@ -97,6 +101,8 @@ class TrackSignalType(str, Enum):
 
     ADD = "add"
     MOVED = "moved"
+    # Temporary ID retirement. The coordinator's item-presence policy decides
+    # whether this eventually means a persisted REMOVED event.
     REMOVE = "remove"
     # TODO(ReID): Keep RETURNED emission inactive until associative memory resolves
     # an observation to a permanent item_id; a tracker ID alone is insufficient.
@@ -143,6 +149,11 @@ class _ActiveTrack:
     stability_reference_box: tuple[int, int, int, int] | None = None
     stopped_since: float | None = None
     stopped_at: datetime | None = None
+    # Candidate stillness: ADD needs the confirmation time spent near this anchor.
+    first_seen_at: float = 0.0
+    still_anchor_box: tuple[int, int, int, int] | None = None
+    still_resets: int = 0
+    still_last_logged_at: float | None = None
 
 
 @dataclass(slots=True)
@@ -155,6 +166,11 @@ class DetectionTracker:
     movement_buffer_scale: float = 1.2
     movement_stop_tolerance_pixels: float = 5.0
     movement_stopped_confirmation_seconds: float = 1.0
+    # Centre displacement from the still anchor beyond which a candidate counts as
+    # moving and its confirmation clock restarts. Uncalibrated; detector boxes
+    # jitter on a stationary object, so this is deliberately above the 5px
+    # movement_stop_tolerance_pixels.
+    candidate_stillness_tolerance_pixels: float = 12.0
     clock: Callable[[], float] = field(default=monotonic, repr=False)
     timestamp_clock: Callable[[], datetime] = field(default=_utc_now, repr=False)
     _tracks: dict[int, _ActiveTrack] = field(
@@ -190,6 +206,8 @@ class DetectionTracker:
             active_track = _ActiveTrack(
                 detection=detection,
                 confirmation_started_at=now,
+                first_seen_at=now,
+                still_anchor_box=detection.box,
             )
             self._tracks[track_id] = active_track
         elif active_track.status is TrackStatus.MISSING:
@@ -206,6 +224,8 @@ class DetectionTracker:
             )
         else:
             active_track.detection = detection
+            if active_track.status is TrackStatus.CANDIDATE:
+                self._restart_if_moving(track_id, active_track, detection, now)
 
         if (
             active_track.status is TrackStatus.CANDIDATE
@@ -227,6 +247,44 @@ class DetectionTracker:
             ]
 
         return []
+
+    def _restart_if_moving(
+        self,
+        track_id: int,
+        active_track: _ActiveTrack,
+        detection: Detection,
+        now: float,
+    ) -> None:
+        """Restart a candidate's confirmation clock when its box leaves the still anchor.
+
+        The anchor stays fixed until it is exceeded, so jitter inside the tolerance
+        never resets the clock while a slow steady drift still does. Resets are logged
+        at most once per confirmation window, with a running count and the time spent
+        visible, so a track that never confirms is visible in the console.
+        """
+        anchor = active_track.still_anchor_box
+        if anchor is None:
+            active_track.still_anchor_box = detection.box
+            return
+        displacement = _box_center_displacement(anchor, detection.box)
+        if displacement <= self.candidate_stillness_tolerance_pixels:
+            return
+
+        active_track.still_anchor_box = detection.box
+        active_track.confirmation_started_at = now
+        active_track.still_resets += 1
+        last_logged_at = active_track.still_last_logged_at
+        if last_logged_at is None or now - last_logged_at >= self.candidate_confirmation_seconds:
+            active_track.still_last_logged_at = now
+            log_action(
+                Category.DEFER,
+                track=track_id,
+                reason="not_still",
+                resets=active_track.still_resets,
+                visible_s=now - active_track.first_seen_at,
+                moved_px=displacement,
+                tolerance_px=self.candidate_stillness_tolerance_pixels,
+            )
 
     def _update_stable_track(
         self,
@@ -398,6 +456,8 @@ class DetectionTracker:
             raise ValueError(
                 "movement_stopped_confirmation_seconds must be positive"
             )
+        if self.candidate_stillness_tolerance_pixels < 0:
+            raise ValueError("candidate_stillness_tolerance_pixels must be non-negative")
 
         tracked_detections = self._index_detections(detections)
         now = self.clock()

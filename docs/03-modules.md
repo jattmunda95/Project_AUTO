@@ -25,7 +25,7 @@ For the visual view, open the [complete project map](12-project-map.md). The [Py
 | [perception/segmenter.py](../src/project_auto/perception/segmenter.py) | SegmenterConfig, SamSegmenter.segment, Segmentation | uint8 BGR frame plus integer boxes to frame-sized boolean masks and scores; True retains foreground; selects best finite nonempty mask |
 | [perception/scene_processor.py](../src/project_auto/perception/scene_processor.py) | SceneProcessor.prepare_reference/process, PreparedReference, IdentityDecision | Prepares masked RGB crop, normalized embedding, aspect ratio and foreground color histogram; proposes new/existing/pending; owns no scheduling or persistence |
 
-Tracker confirmation lasts two seconds with at most 15 cumulative candidate misses per attempt. A 16th miss resets the attempt. Stable placement uses a centered buffer, and movement must stop visibly for the configured interval before MOVED. Absence of a stable or moving track for two seconds emits REMOVE. These are heuristics in image coordinates, not physical motion measurement.
+Tracker confirmation requires two seconds of stillness: a candidate keeps a still-anchor box, and if its centre moves more than candidate_stillness_tolerance_pixels from the anchor the anchor moves and the clock restarts (logged as `DEFER reason=not_still`, at most once per window). Dropouts do not reset the anchor. At most 15 cumulative candidate misses are tolerated per attempt. A 16th miss resets the attempt. Stable placement uses a centered buffer, and movement must stop visibly for the configured interval before MOVED. Absence of a stable or moving track for two seconds emits REMOVE. These are heuristics in image coordinates, not physical motion measurement.
 
 ## Orchestration and events
 

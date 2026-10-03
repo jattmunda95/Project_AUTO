@@ -15,10 +15,11 @@ project_auto.events.identification_worker (job execution, background thread).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from time import monotonic
-from typing import Callable, Literal
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -66,6 +67,9 @@ class IdentificationJob:
     # can be joined. Never used for any identity decision.
     query_id: str | None = None
     frame_index: int | None = None
+    # Runtime correlation, independent of optional diagnostic query IDs.
+    job_id: int | None = None
+    priority: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +88,7 @@ class IdentificationResult:
     candidate_kind: CandidateKind | None = None
     # Echoed back from the job so the coordinator can record the applied outcome.
     query_id: str | None = None
+    job_id: int | None = None
 
 
 _OUTSTANDING = (IdentificationState.QUEUED, IdentificationState.PROCESSING)
@@ -132,7 +137,9 @@ class ReferenceManager:
         self._eligible_at.pop(track_id, None)
         self._reasons.pop(track_id, None)
 
-    def mark_deferred(self, track_id: int, now: float, cooldown_seconds: float, reason: str) -> None:
+    def mark_deferred(
+        self, track_id: int, now: float, cooldown_seconds: float, reason: str
+    ) -> None:
         """Defer retry after a failed attempt (e.g. a bad mask); ends this attempt."""
         self._states[track_id] = IdentificationState.DEFERRED
         self._eligible_at[track_id] = now + max(0.0, cooldown_seconds)

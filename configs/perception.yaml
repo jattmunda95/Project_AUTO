@@ -7,11 +7,22 @@ confidence: 0.18
 iou: 0.45
 image_size: 960
 device: cpu
+# BoT-SORT settings, relative to the project root. Repo-owned so they are versioned and do not
+# revert when .venv is reinstalled; see the comments in that file.
+tracker_config: configs/botsort.yaml
 
 # Tracker behaviour
 candidate_confirmation_seconds: 2.0
 max_candidate_missing_frames: 15
-removal_timeout_seconds: 2.0
+# Temporary track retirement only; item removal is configured under
+# scene_processor.yaml -> removal and decided by the coordinator.
+removal_timeout_seconds: 3.0
 movement_buffer_scale: 1.2
 movement_stop_tolerance_pixels: 5.0
 movement_stopped_confirmation_seconds: 1.0
+# ADD needs candidate_confirmation_seconds of *stillness*: a candidate whose box centre
+# moves further than this from where it last settled restarts the clock, so a hand or a
+# carried object is not added until it is put down. Above movement_stop_tolerance_pixels
+# because detector boxes jitter on a stationary object. UNCALIBRATED: if a real item
+# never gets added, look for repeating `DEFER reason=not_still` lines and raise it.
+candidate_stillness_tolerance_pixels: 12.0

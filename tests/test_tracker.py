@@ -394,3 +394,149 @@ def test_stable_track_does_not_emit_move_end_without_prior_movement() -> None:
 def test_invalid_configuration_is_rejected(tracker: DetectionTracker) -> None:
     with pytest.raises(ValueError):
         tracker.update([])
+
+
+# --- Stillness-gated ADD -----------------------------------------------------
+
+
+def shifted(x: int) -> Detection:
+    return make_detection(box=(x, 20, x + 100, 220))
+
+
+def test_a_moving_candidate_is_never_added() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+
+    # 30px per half second for 6s: always further than the tolerance from the anchor.
+    for step in range(13):
+        now[0] = step * 0.5
+        assert tracker.update([shifted(10 + step * 30)]) == []
+
+
+def test_jitter_inside_the_tolerance_still_confirms_on_time() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+
+    for step, offset in enumerate((0, 4, -3, 5, -4, 3, 0, 4, -2, 2)):
+        now[0] = step * 0.2
+        assert tracker.update([shifted(10 + offset)]) == []
+
+    now[0] = 2.0
+    signals = tracker.update([shifted(10)])
+
+    assert [signal.signal_type for signal in signals] == [TrackSignalType.ADD]
+
+
+def test_slow_drift_beyond_the_tolerance_restarts_the_clock() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+
+    # 5px per 0.25s never exceeds the tolerance frame to frame, but it does against
+    # the fixed anchor, so the clock must restart rather than confirm at 2.0s.
+    signals = []
+    for step in range(9):
+        now[0] = step * 0.25
+        signals += tracker.update([shifted(10 + step * 5)])
+
+    assert signals == []
+
+
+def test_the_clock_restarts_from_the_moment_the_candidate_stops() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+    assert tracker.update([shifted(10)]) == []
+
+    now[0] = 1.0
+    assert tracker.update([shifted(200)]) == []  # moved: clock restarts at 1.0
+
+    now[0] = 2.0
+    assert tracker.update([shifted(200)]) == []  # only 1.0s still
+
+    now[0] = 2.99
+    assert tracker.update([shifted(200)]) == []
+
+    now[0] = 3.0
+    signals = tracker.update([shifted(200)])
+    assert [signal.signal_type for signal in signals] == [TrackSignalType.ADD]
+
+
+def test_a_candidate_that_stops_moving_is_added_after_the_still_period() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+    for step in range(5):
+        now[0] = step * 0.5
+        assert tracker.update([shifted(10 + step * 40)]) == []
+
+    still_since = now[0]
+    final = shifted(10 + 4 * 40)
+    now[0] = still_since + 1.99
+    assert tracker.update([final]) == []
+    now[0] = still_since + 2.0
+    assert [s.signal_type for s in tracker.update([final])] == [TrackSignalType.ADD]
+
+
+def test_stillness_survives_brief_candidate_dropouts() -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+    assert tracker.update([shifted(10)]) == []
+    now[0] = 0.5
+    assert tracker.update([]) == []  # a missing frame must not reset the anchor
+    now[0] = 2.0
+    signals = tracker.update([shifted(10)])
+
+    assert [signal.signal_type for signal in signals] == [TrackSignalType.ADD]
+
+
+def test_a_restarted_clock_is_logged_with_its_reason(capsys: pytest.CaptureFixture[str]) -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+    tracker.update([shifted(10)])
+    now[0] = 0.5
+    tracker.update([shifted(100)])
+
+    line = capsys.readouterr().out
+    assert "DEFER" in line
+    assert "track=7" in line
+    assert "reason=not_still" in line
+    assert "resets=1" in line
+    assert "visible_s=0.5000" in line
+    assert "tolerance_px=12.0000" in line
+
+
+def test_restart_logging_is_limited_to_once_per_confirmation_window(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+    tracker.update([shifted(10)])
+
+    # Ten resets within the first 2s window must produce one line, not ten.
+    for step in range(1, 11):
+        now[0] = step * 0.15
+        tracker.update([shifted(10 + step * 40)])
+    assert capsys.readouterr().out.count("reason=not_still") == 1
+
+    # Still moving after the window: another line, carrying the running reset count.
+    for step in range(11, 25):
+        now[0] = step * 0.15
+        tracker.update([shifted(10 + step * 40)])
+    output = capsys.readouterr().out
+    assert output.count("reason=not_still") >= 1
+    assert "resets=1 " not in output
+
+
+def test_a_still_candidate_logs_nothing(capsys: pytest.CaptureFixture[str]) -> None:
+    now = [0.0]
+    tracker = DetectionTracker(clock=lambda: now[0])
+    for step in range(5):
+        now[0] = step * 0.5
+        tracker.update([shifted(10)])
+
+    assert "not_still" not in capsys.readouterr().out
+
+
+def test_negative_stillness_tolerance_is_rejected() -> None:
+    tracker = DetectionTracker(candidate_stillness_tolerance_pixels=-1.0)
+
+    with pytest.raises(ValueError, match="candidate_stillness_tolerance_pixels"):
+        tracker.update([shifted(10)])

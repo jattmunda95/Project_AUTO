@@ -77,6 +77,7 @@ After modifying code:
 - run formatting and lint checks when available;
 - report what changed and what remains unverified;
 - do not mark work complete until verification passes.
+- on this Windows/OneDrive checkout run pytest with `--basetemp` pointed at a plain writable folder; without it 19 `tmp_path` tests error before running. Ruff is installed through the `dev` extra.
 
 ## Current priority
 
@@ -110,6 +111,12 @@ ReID, or the database from the tracker itself. The event layer distinguishes new
 `TASKS.md` for current schema recovery, hardware region verification, weighted-score calibration,
 performance measurement and logging priorities. `PROJECT_CONTEXT.md` now describes the current
 async and spatial architecture; the detailed reference is `docs/11-regions.md`.
+
+## Class-agnostic identification and stillness-gated ADD
+
+Detector class labels are unreliable (one phone read as cell phone, mouse and apple). Never gate, filter, vote on or name identity by class: no denylist, no settled-class requirement, no class-based removal. `Item.class_name` is descriptive text only. The `perception/class_filter.py` voter was removed for this reason, and `test_a_flickering_class_label_never_withholds_identification` guards the rule. Do not exclude hands or scenery by class or by calibrated region either: objects must be remembered wherever they go. Use geometry (`max_box_area_fraction`, currently disabled at 1.0), behaviour, or appearance.
+
+`DetectionTracker` confirms ADD only after `candidate_confirmation_seconds` of stillness: a candidate whose box centre leaves its still anchor by more than `candidate_stillness_tolerance_pixels` (12.0, uncalibrated) restarts the clock and logs `DEFER reason=not_still`. Handoff probes bypass ADD and are unaffected. BoT-SORT settings live in `configs/botsort.yaml` (selected by `perception.yaml: tracker_config`), which equals Ultralytics' defaults except `track_buffer: 45`; change one setting at a time. The ReID worker takes about 3.7 s per resolve job, so more candidate IDs than the queue can serve inside the removal deadlines will produce stale handoff results.
 
 ## Reference capture (event-driven, not continuous)
 

@@ -1,0 +1,32 @@
+# Repo-owned BoT-SORT settings, passed to Ultralytics by perception/detector.py (the path is
+# configs/perception.yaml -> tracker_config). Before this file existed the detector passed the
+# bare name "botsort.yaml", which Ultralytics resolves to its own copy inside .venv; that copy
+# silently reverts on every reinstall and cannot be reviewed or versioned.
+#
+# Every value below is Ultralytics' bundled default EXCEPT track_buffer. Change one thing at a
+# time so any effect on ID churn can be traced to it.
+tracker_type: botsort # (str) Tracker backend: botsort
+track_high_thresh: 0.25 # (float) First-stage match threshold; raise for cleaner tracks, lower to keep more
+track_low_thresh: 0.1 # (float) Second-stage threshold for low-score matches; balances recovery vs drift
+new_track_thresh: 0.25 # (float) Start a new track if no match >= this; higher reduces false tracks
+
+# Frames (not seconds) a lost track stays alive waiting for its object to reappear. Default is 30,
+# about 1.2-1.5 s at this machine's 20-25 fps. Every new ID near a missing item costs a ReID job
+# (~3.7 s each on the worker), so a few more frames of re-acquisition trades fewer ID changes for
+# a slightly higher chance that a stale ID attaches to a different nearby object. UNCALIBRATED:
+# watch how many distinct track IDs one stationary item produces, and raise or lower from there.
+# It only helps if the object returns where the tracker predicts; a fast jump that fails
+# match_thresh will still create a new ID regardless of this value.
+track_buffer: 45 # (int) Frames to keep lost tracks alive (bundled default: 30)
+
+match_thresh: 0.8 # (float) Association similarity threshold (IoU/cost); tune with detector quality
+fuse_score: True # (bool) Fuse detection score with motion/IoU for matching; stabilizes weak detections
+
+# BoT-SORT specifics
+gmc_method: sparseOptFlow # (str) Global motion compensation: sparseOptFlow|orb|sift|ecc|none
+
+# ReID model related thresh
+proximity_thresh: 0.5 # (float) Min IoU to consider tracks proximate for ReID; higher is stricter
+appearance_thresh: 0.8 # (float) Min appearance similarity for ReID; raise to avoid identity swaps
+with_reid: False # (bool) Enable ReID model use; needs extra model and compute
+model: auto # (str) ReID model name/path; "auto" uses detector features if available

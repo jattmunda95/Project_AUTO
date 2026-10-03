@@ -49,6 +49,7 @@ class YoloDetector:
         self.iou = float(config["iou"])
         self.image_size = int(config["image_size"])
         self.device = str(config["device"])
+        self.tracker_config = project_root / config["tracker_config"]
 
     @staticmethod
     def _load_model(source_model: Path, openvino_model: Path) -> YOLO:
@@ -64,7 +65,7 @@ class YoloDetector:
         results = self.model.track(
             source=frame,
             persist=True,
-            tracker="botsort.yaml",
+            tracker=str(self.tracker_config),
             conf=self.confidence,
             iou=self.iou,
             imgsz=self.image_size,
