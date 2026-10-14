@@ -2,6 +2,64 @@
 
 ## Current task
 
+**15 October 2026 update (supersedes the 14 October list below where they conflict):**
+- ReID calibration is dropped: the user judged performance satisfactory. Weights were set by
+  hand to DINO 0.70 / colour 0.25 / aspect 0.05, acceptance 0.68, margin 0.06 (estimates
+  from recorded scores, not fitted; 34 ReID tests pass). The S0-S12 checklist, analysis
+  script and held-out session are deferred, not planned. Docs still show old values.
+- Key observation (user): detection is poor when objects are too close to the camera and
+  much better with a far camera and full scene context. Camera placement is now step 1:
+  fix position, record far clips, rerun `compare_detectors.py`, recalibrate regions, then
+  run the MVP demonstration. Detector ranking was not measured at a far placement.
+- New order: (1) camera placement and far-clip comparison, incl. clip 215947 review;
+  (2) region calibration plus MVP run, which doubles as live validation of handoff,
+  stillness and reference capture; (3) commit in logical groups; (4) fixes the MVP shows
+  (FPS/latency, vanished-probe skipping, not_still log, BoT-SORT); (5) ask-and-answer flow
+  only if needed for multi-face items (a phone's other face scores about 0.49); (6) docs sync.
+
+**14 October 2026 update (previous work order):** detector selection
+is complete. YOLO11s/OpenVINO with YAML `agnostic_nms: true` is implemented in the live
+app. Validate it on camera before tuning downstream settings or collecting calibration
+scores. Older dated priorities below are historical where they conflict with this update.
+
+1. Review clip `215947` for overlapping-object suppression (still-qualified tracks 3 -> 2).
+2. Live diagnostics: stillness, move/handoff, true exit/return, nearby different object,
+   hand occlusion, busy worker and sparse baseline/movement reference capture.
+3. Full normal-app MVP with two distinct objects and calibrated regions: ADDED, MOVED,
+   REMOVED, last-location query, RETURNED and restart persistence. Preserve databases.
+4. Review and commit source/docs changes and staged artifact untracking in logical groups.
+5. Measure quiet-CPU FPS/worker latency; use failures to guide vanished-probe skipping,
+   stillness-log cleanup and one-at-a-time BoT-SORT tuning.
+6. Write S0-S12 checklist and diagnostic analysis script, collect labels and validate
+   ReID on a held-out session. Current acceptance 0.55 and margin 0.05 are provisional.
+7. Add user confirmation for uncertain identity, alternate views, names and non-items.
+   Nearest-neighbour matching already exists. Schema work is separate from NMS integration.
+
+### Completed 14 October 2026: detector comparison, integration and Git hygiene
+
+- Resumed `data/comparisons/20261004_225102`: background finished seven clips.
+- Added explicit `yolov8s` harness selection, downloaded/exported to OpenVINO and
+  tested all seven clips; curves overlaid in the existing report.html.
+- Overall IDs/handovers/short tracks: agnostic 89/23/54; baseline 141/65/103;
+  YOLO26s 120/39/90; YOLOv8-s 149/65/98; background 632/130/521.
+- Later clips 215252/215408/215947 (88.139 s): agnostic 68/18/48; baseline 94/38/71;
+  YOLO26s 81/28/68; YOLOv8-s 99/44/74; background 393/82/308.
+  Agnostic has lowest measured churn overall and later: 11.5 and 12.3 handovers/min.
+- Exploratory exact paired two-sided permutation p-values on seven handover counts:
+  agnostic versus baseline 0.03125, YOLOv8-s 0.09375, YOLO26s 0.1875. Unadjusted,
+  small sample; geometric handovers are not labelled ID switches. Recall and timing
+  advantages remain unverified; review 215947 and measure on a quiet CPU.
+- Enabled config-driven agnostic NMS in YoloDetector.model.track(), without schema change.
+  Detector/comparison tests: 32 passed; changed detector/test files lint passed.
+  Existing pytest-cache permission warning persists. Full suite/live camera not rerun.
+- Ignored weights, OpenVINO exports, mobileclip encoders, temp test output, caches,
+  virtual environment and runtime databases. Recording/comparison/log ignores retained.
+  Previously tracked matching artifacts removed from index only, files preserved locally.
+  Scripts/source tests remain tracked. No commit created in this session.
+- TODO.md and TASKS.md updated. Architecture/config docs and HTML rebuild remain open.
+
+### Historical priorities (2-4 October; superseded above)
+
 **2 October 2026 priority update:** validate the implemented item-level removal/handoff
 pipeline on camera before continuing the older sequence below. Follow
 `docs/14-removal-handoff.md`: unchanged-position ID switch, moved ID switch, true exit,
@@ -19,6 +77,30 @@ NEW then nothing, by design (no item exists yet); that branch now logs
 `DEFER reason=not_visible`.
 
 **Next steps (end of 2 October 2026), details in the section "2 October 2026 (later)" below:** (1) live-check the stillness gate, `track_buffer: 45` and `worker_torch_threads: 6`; (2) skip queued handoff probes whose track vanished; (3) quiet the `not_still` log; (4) remaining BoT-SORT settings one at a time; (5) Phase B ask-and-answer path starting with the pure identity policy; (6) commit the large uncommitted tree in logical chunks.
+
+**4 October 2026 update:** the front-of-pipeline (detection) work now precedes the list above. The clip recorder and the detector comparison harness are built; see "4 October 2026: clip recorder and detector comparison harness" below. Detector choice (TODO.md item 5) is open; steps (1)–(4) above wait on it, because the stillness tolerance, `track_buffer` and the handoff log noise all depend on the detector's boxes.
+
+## 4 October 2026: clip recorder and detector comparison harness
+
+**Implemented and verified (offline only; the app, database and ReID are untouched):**
+- `scripts/record_clip.py`: toggle key (default `r`, `--key`), `q`/Esc quits and finalizes. Reuses `Camera` + `configs/camera.yaml`; writes mp4v at the measured frame rate (not the configured 30) so playback timing matches stillness/track-buffer timings. REC overlay is preview-only. Output `data/recordings/` (already gitignored). 7 clips recorded; 3 are 4–6 s toggle tests.
+- `scripts/compare_detectors.py` + `tests/test_compare_detectors.py` (28 tests; the test loads the script by importlib and must register it in `sys.modules` first or dataclasses fail; on this OneDrive checkout pytest needs `--basetemp`). Output goes to `data/comparisons/<timestamp>/` (gitignored): `videos/<clip>/<detector>.mp4`, `frames/*.csv`, `results.json`, `report.html`.
+- **Fairness rule:** every detector's boxes go through the same Ultralytics `BOTSORT` built from `configs/botsort.yaml`, fed an Ultralytics `Boxes` object (same shape the app's tracker sees). Inference settings (conf 0.18, iou 0.45, imgsz 960) come from `configs/perception.yaml`. The tracker version-coupling is guarded by a test against the installed Ultralytics (8.4.118).
+- **Detectors:** `yolo11s` (OpenVINO, baseline), `yolo11s_agnostic` (`agnostic_nms=True`), `yoloe26s_text`, `yoloe11s_text` (prompt "object"), `background` (control: median of the first 15 frames as a fixed reference, abs-diff > 30, morphology, min area 0.05% of frame; first 15 frames yield nothing and an object present from the start is invisible to it). Prompt-free `yoloe11s_pf`/`yoloe26s_pf` run only with `--pf` (slow: scores a vocabulary of thousands of names per box). `yolo26s` was removed from the registry on request (slower on PyTorch and worse). YOLO-World, FastSAM and RT-DETR deferred.
+- **Downloads are gated:** missing weights are skipped with a reason unless `--download`; a model that fails to load is recorded and skipped without stopping the run. YOLOE text mode may fetch a text encoder, so it also needs `--download` (it left `mobileclip2_b.ts` in the repo root).
+- **`--resume <folder>`:** keeps finished detector/clip pairs whose CSV (and MP4 unless `--no-video`) still exist, rebuilds chart series from the CSVs, reruns the rest, and drops stale skip notes for detectors selected again. It refuses to continue if a stored setting (tracker, confidence, iou, imgsz, max_frames, stillness values) differs; settings an old run never recorded are not compared. Verified against the real interrupted folder (25 runs kept).
+- **Metric definitions:** raw detections/frame (pre-tracker); tracked/frame; unique IDs; **ID handover** = a new ID whose first box has IoU >= 0.3 with the last box of a track that ended 1–60 frames earlier (each ended track matched once; overlapping tracks are not handovers); short tracks (< 1 s); dropout % = missing frames inside tracks' lifespans; **still >= 2 s tracks** = a stretch inside the app's 12 px tolerance for 2 s (same restart rule as the ADD gate, gap > 15 frames resets), i.e. tracks that could pass ADD; never-still = >= 1 s but never still (a proxy for hands/carried objects, not a hand detector); label-flicker tracks (informational: identity never uses class); jitter px/frame; detector and tracker timing excluding 3 warm-up frames.
+
+**First results (run `20261004_225102`, interrupted by me after `yoloe26s_text` had done 4 clips; 7 clips = 3,534 frames):**
+- `yolo11s` vs `yolo11s_agnostic`: unique IDs 141 vs 89; handovers 65 vs 23; short tracks 103 vs 54; still >= 2 s tracks 14 vs 13; detections/frame and empty-frame % nearly identical. Agnostic NMS mostly merges duplicate boxes. Churn is still far above the real item count. On clip `215947` agnostic lost one still track (3 to 2): **to confirm in the video** whether a real item was suppressed (the overlapping-hand risk).
+- `yolo26s` (PyTorch): 120 IDs, 39 handovers, ~200 ms/frame; removed.
+- **`yoloe26s_text` detected nothing (100% empty frames).** Probe on frame 300 of `215252` (obvious phone) at conf 0.001: "object" max 0.037, "phone" 0.13, "pen" no boxes, "thing" 0.089. Text-prompted YOLOE scores are on a different scale from YOLO confidence. BoT-SORT also ignores boxes < `track_low_thresh` 0.1 and cannot start tracks < `new_track_thresh` 0.25, so lowering only the detector threshold would not help. Rescoring or per-detector tracker thresholds would break the same-tracker rule. `yoloe11s_text` untested (weights not downloaded).
+- Timings are unreliable: `yolo11s` swung 28–69 ms across clips, which looks like CPU contention (probably another process running at the time). PyTorch vs OpenVINO rows are not like-for-like.
+
+**Status as of 14 October:** background/YOLOv8-s comparison, detector selection,
+agnostic integration and artifact cleanup are complete. Review 215947, label scenario
+coverage and re-time on a quiet CPU. YOLOE-11 weights exist locally but this report has
+no completed YOLOE-11 results. Experimental defaults/flag cleanup is optional maintenance.
 
 ## Implemented and verified 2 October 2026: item-level removal and ReID handoff
 
@@ -126,16 +208,16 @@ Updated 28 September 2026: order is MVP run-through -> settle detector -> Refere
 - Weighted descriptor preparation, storage, gallery fields and margin check are present in current source (the CSV diagnostics of that time were later replaced by the 26 September diagnostic entry point). Focused accuracy and weighted/margin regression coverage still need review.
 - Modular Markdown/HTML docs, README and PROJECT_CONTEXT updated to represent current async and spatial contracts.
 
-## Next
+## Remaining backlog (after current live validation)
 
 - Write the offline join/analysis script for labelled diagnostic runs (queries + candidates + outcomes + ground_truth + objects): genuine vs impostor score distributions per component, offline weight fitting, acceptance/margin threshold replay, and a held-out second session. Consider moving the 0.65/0.20/0.15 weights into YAML once fitted.
-- Update `docs/06-configuration.md` for the removed `match_log_path` and the new `configs/reid_diagnostics.yaml`.
+- Diagnostic configuration is already documented in `docs/06-configuration.md`; synchronise agnostic NMS/current thresholds and rebuild/check the portal.
 - Write the S0-S12 ReID scenario protocol (designed 27 September; see Current task 5) into docs as an operator checklist with an action-log template, before the first labelled session.
 - Add diversity-aware gallery replacement once max_references_per_item is regularly hit in practice (see TODO(gallery) in identification_worker.py); V1 just refuses new references at the cap.
 - Improve worker startup/schema failure reporting; initial gallery failure currently bypasses per-job error handling.
 - Avoid duplicate DINO inference in the nonempty-gallery resolve path; measure before optimizing further.
-- Define ambiguity handling for margin rejection, currently interpreted as NEW and potentially producing duplicate identities.
-- Review generation-aware stale-result correlation and whether unresolved MOVED signals should be buffered/replayed.
+- Extend existing low-margin PENDING/defer behavior with user confirmation; the NEW-on-margin-rejection bug was fixed in September.
+- Runtime job IDs already protect stale-result correlation; review whether unresolved MOVED signals should be buffered/replayed.
 - Track model/preprocessing/descriptor-layout compatibility and prototype provenance.
 - Add/verify targeted tests for weighted descriptors, margin behavior, missing-descriptor fallback, prototype calculation and a real SAM mask-polarity contract.
 - Define remaining occlusion/status-change semantics and save high-quality object/context evidence files.

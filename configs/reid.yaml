@@ -7,7 +7,9 @@ device: cpu
 # labelled runs from the diagnostic entry point (configs/reid_diagnostics.yaml):
 # compare genuine (true-item) scores with impostor (other-item) scores and pick
 # a threshold between the two clusters.
-acceptance_threshold: 0.55
+# 15 October 2026: weights moved to 0.70/0.25/0.05 and this to 0.68 by hand
+# estimate (no labelled data); keeps look-alikes and hands below the line.
+acceptance_threshold: 0.68
 # The best-scoring item must beat the runner-up by at least this much to be
 # accepted, guarding against accepting a weak winner when two items score
 # nearly the same. Also an unvalidated starting estimate.
@@ -17,6 +19,6 @@ acceptance_threshold: 0.55
 # than creating a duplicate, so a too-strict margin mainly cost correct matches
 # a retry, not safety. Interim relaxation, not a calibrated value; retune with
 # acceptance_threshold together against labelled runs (see TASKS.md item 5).
-margin_threshold: 0.05
+margin_threshold: 0.06
 top_k: 3
 prototype_shortlist_size: 3

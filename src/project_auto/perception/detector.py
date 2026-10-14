@@ -47,6 +47,7 @@ class YoloDetector:
         self.model = self._load_model(source_model, openvino_model)
         self.confidence = float(config["confidence"])
         self.iou = float(config["iou"])
+        self.agnostic_nms = bool(config.get("agnostic_nms", False))
         self.image_size = int(config["image_size"])
         self.device = str(config["device"])
         self.tracker_config = project_root / config["tracker_config"]
@@ -68,6 +69,7 @@ class YoloDetector:
             tracker=str(self.tracker_config),
             conf=self.confidence,
             iou=self.iou,
+            agnostic_nms=self.agnostic_nms,
             imgsz=self.image_size,
             device=self.device,
             verbose=False,

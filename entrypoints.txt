@@ -1,0 +1,176 @@
+PROJECT AUTO - ENTRY POINTS
+===========================
+Last updated 4 October 2026.
+
+Run everything from the project root (Project_AUTO) with the project's virtual environment.
+In the commands below, "py" means:   .venv\Scripts\python.exe
+(project-auto is installed editable, so the project-auto and project-auto-diagnostics
+commands also exist in .venv\Scripts.)
+
+Keys only register when the OpenCV preview window has focus (click on it first).
+Camera: configs\camera.yaml. It tries usb_device 0 first, then webcam_device 1.
+
+
+QUICK GUIDE
+-----------
+Run the system ............................ project-auto
+Draw / edit table regions ................. py scripts\define_regions.py
+Record test footage ....................... py scripts\record_clip.py
+Compare detectors on recorded footage ..... py scripts\compare_detectors.py
+Run the system and record ReID evidence ... project-auto-diagnostics
+Back up / restore the diagnostic database . py scripts\reid_snapshot.py
+Find which camera index is which .......... py cmaera_no_identifier.py
+
+
+1. THE APPLICATION
+------------------
+Command:   project-auto
+           (same as: py -m project_auto.main  |  py scripts\run_camera.py)
+Code:      src\project_auto\main.py -> app.py (run_app)
+
+Purpose:   The real system. Camera -> YOLO11s (OpenVINO) -> BoT-SORT -> stillness-gated ADD
+           -> ReID (SAM2 + DINOv2 + gallery) -> events (ADD / MOVED / REMOVED / RETURNED)
+           -> SQLite (data\*.db, path from configs\table.yaml). Shows the live feed with
+           detection boxes. Logs actions (EVENT, MATCH, ASSOC, DEFER, ...) to the console.
+
+Keys (window title: "Project AUTO - q quit, w where item, r inspect region"):
+  q   Quit and shut down the ReID worker cleanly.
+  w   "Where is this item?" Asks in the CONSOLE for an item ID or exact name, prints where
+      it is (region name, "outside scene (removed)", or "unknown/unassigned region") and
+      highlights that region on the video for a short time.
+  r   "Inspect region". Asks in the CONSOLE for a region name, prints what it currently
+      contains, its recent activity and the items historically associated with it, and
+      highlights it.
+  Note: w and r use a console prompt (type the answer in the terminal, then Enter). The
+  video loop pauses while the prompt is waiting. To cancel a prompt, end the input
+  (Ctrl+Z then Enter on Windows); it prints "Console query cancelled."
+
+Needs regions to exist first (see entry point 2) for w/r to say anything useful.
+
+
+2. REGION CALIBRATION
+---------------------
+Command:   py scripts\define_regions.py
+           (same as: py -m project_auto.region_calibration)
+Code:      src\project_auto\region_calibration.py
+
+Purpose:   Draw the named polygons (table zones) that items are located in. Saved to the
+           normal database. Existing regions are drawn on the live feed. Region names must
+           be unique. The diagnostics database has its own regions; calibrate there
+           separately if you need them.
+
+Controls (window title: "Project AUTO regions - click vertices, u undo, Enter/c save, q quit"):
+  Left mouse click   Add a polygon vertex at the pointer.
+  u                  Undo the last vertex.
+  Enter  or  c       Finish the polygon: previews it, then asks in the CONSOLE for a name.
+                     A blank name cancels and keeps your vertices. Invalid polygons are
+                     refused with a message.
+  q                  Quit.
+
+
+3. ReID DIAGNOSTICS (the application plus recording)
+----------------------------------------------------
+Command:   project-auto-diagnostics
+           (same as: py -m project_auto.reid_diagnostics_app)
+Code:      src\project_auto\reid_diagnostics_app.py, config configs\reid_diagnostics.yaml
+
+Purpose:   Runs exactly the application above, but records every ReID resolve job (queries,
+           candidates, outcomes and crops) into a new folder under logs\reid_runs\ for
+           offline labelling, scores the whole gallery (shortlist 0), and uses a SEPARATE
+           database (data\diagnostics\project_auto_diagnostics.db) so test items never
+           enter your real memory. The normal project-auto never reads this config.
+
+Keys:      Same as the application: q quit, w where item, r inspect region.
+           To start a session with an empty gallery, delete the diagnostics database
+           (or restore a snapshot, entry point 4).
+
+
+4. DIAGNOSTIC DATABASE SNAPSHOTS
+--------------------------------
+Command:   py scripts\reid_snapshot.py backup <label> [--force]
+           py scripts\reid_snapshot.py restore <label> [--yes]
+           py scripts\reid_snapshot.py list
+Code:      scripts\reid_snapshot.py
+
+Purpose:   Save and restore the DIAGNOSTIC database between tuning blocks (for example
+           "post_enrolment"). Run only while the diagnostics app is stopped; it refuses if
+           the database is in use. Uses SQLite's backup API (the store runs in WAL mode).
+  backup    Save the live diagnostic database as a snapshot. --force overwrites a snapshot
+            with the same label.
+  restore   Overwrite the live diagnostic database with a snapshot. Asks to confirm unless
+            --yes. The database it replaces is first saved as _before_restore, so one
+            mistaken restore is recoverable.
+  list      Show snapshots with size and time.
+  The normal project-auto database is never touched. No keyboard keys.
+
+
+5. CLIP RECORDER
+----------------
+Command:   py scripts\record_clip.py [--key X]
+Code:      scripts\record_clip.py
+
+Purpose:   Record camera clips so detectors can be compared on identical footage. Saves
+           mp4 files to data\recordings\clip_YYYYmmdd_HHMMSS.mp4 (folder is gitignored),
+           at the camera's measured frame rate. Does no detection and does not touch the app.
+
+Keys (window title: "Project AUTO clip recorder"):
+  r        Start a clip; press r again to stop and save it. Change the key with --key X
+           (a single character, not q). The REC indicator and timer show on the preview
+           only, not in the saved video.
+  q / Esc  Quit. A clip still recording is saved first.
+
+
+6. DETECTOR COMPARISON
+----------------------
+Command:   py scripts\compare_detectors.py [options]
+Code:      scripts\compare_detectors.py, tests\test_compare_detectors.py
+
+Purpose:   Offline. Runs candidate detectors over the recorded clips, all through the same
+           BoT-SORT (configs\botsort.yaml) and the app's detector settings, and measures
+           detections per frame, ID churn (unique IDs, ID handovers, short tracks),
+           dropout, tracks that stay still long enough to be ADDed, jitter and speed.
+           Writes to data\comparisons\<timestamp>\ (gitignored):
+             report.html   tables and charts      results.json   all metrics
+             videos\<clip>\<detector>.mp4   annotated clips (boxes coloured by track ID)
+             frames\*.csv  per-frame numbers
+           No keyboard keys; it is driven by options.
+
+Options:
+  --list              Show the detectors and exit.
+  --detectors A B     Run only these. Default: yolo11s, yolo11s_agnostic, yoloe26s_text,
+                      yoloe11s_text, background.
+  --pf                Run only the prompt-free YOLOE models (yoloe11s_pf, yoloe26s_pf);
+                      they are slow. Names also given in --detectors are added.
+  --clips F1 F2       Specific clips. Default: every mp4 in data\recordings.
+  --max-frames N      Stop each clip after N frames (quick trials).
+  --download          Allow downloading missing model weights. Without it, models that
+                      are not in models\ are skipped with a reason.
+  --no-video          Skip the annotated mp4 output.
+  --out FOLDER        Choose the output folder.
+  --resume FOLDER     Continue an earlier run in that folder: finished detector/clip pairs
+                      are kept, the rest are run. Refuses if settings changed since.
+  --openvino          Export and use OpenVINO for YOLO models not yet exported.
+
+
+7. CAMERA INDEX FINDER
+----------------------
+Command:   py cmaera_no_identifier.py   (project root; the file name is spelled this way)
+
+Purpose:   Opens camera indices 0-4 one at a time so you can see which index is which
+           camera (use it to set usb_device / webcam_device in configs\camera.yaml).
+Keys:      Any key moves on to the next camera that opens. Closes after the last one.
+
+
+PLACEHOLDERS (empty files, do nothing yet)
+------------------------------------------
+  scripts\run_video.py        Empty. Intended for running the pipeline on a video file.
+  scripts\benchmark_local.py  Empty.
+  scripts\run_camera.py       Not empty: it just calls the same main() as project-auto
+                              (kept as a convenience duplicate).
+
+
+TESTS
+-----
+Run:  py -m pytest -q --basetemp=<any writable plain folder>
+(The --basetemp is needed on this OneDrive checkout, or the tests that use temporary
+folders error before running. Ruff: py -m ruff check <files>.)

@@ -35,17 +35,17 @@ from project_auto.utils.logging import Category, log_action
 
 # Final score = DINO_WEIGHT * dino_similarity + COLOR_WEIGHT * color_similarity
 #             + ASPECT_WEIGHT * aspect_similarity
-DINO_WEIGHT = 0.65
-COLOR_WEIGHT = 0.20
-ASPECT_WEIGHT = 0.15
+DINO_WEIGHT = 0.70
+COLOR_WEIGHT = 0.25
+ASPECT_WEIGHT = 0.05
 
 
 @dataclass(frozen=True, slots=True)
 class ReidConfig:
     """Configuration for embedding extraction and match acceptance."""
 
-    # TODO(calibrate): acceptance_threshold=0.55 and margin_threshold=0.15 (configs/reid.yaml)
-    # are uncalibrated for the current weighted score (0.65 DINO + 0.20 color + 0.15 aspect).
+    # TODO(calibrate): acceptance_threshold=0.68 and margin_threshold=0.06 (configs/reid.yaml)
+    # are estimated, not fitted, for the current weighted score (0.70 DINO + 0.25 color + 0.05 aspect).
     # Tune both against labelled same/different-item scores from logs/reid_runs/.
     model_name: str
     device: str

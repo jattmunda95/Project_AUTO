@@ -30,6 +30,7 @@ def test_detect_returns_structured_detections() -> None:
     detector = YoloDetector.__new__(YoloDetector)
     detector.confidence = 0.35
     detector.iou = 0.45
+    detector.agnostic_nms = True
     detector.image_size = 640
     detector.device = "AUTO"
     detector.tracker_config = Path("configs/botsort.yaml")
@@ -55,6 +56,7 @@ def test_detect_passes_the_repo_owned_tracker_config_to_ultralytics() -> None:
     detector = YoloDetector.__new__(YoloDetector)
     detector.confidence = 0.35
     detector.iou = 0.45
+    detector.agnostic_nms = True
     detector.image_size = 640
     detector.device = "AUTO"
     detector.tracker_config = Path("configs/botsort.yaml")
@@ -70,6 +72,24 @@ def test_detect_passes_the_repo_owned_tracker_config_to_ultralytics() -> None:
 
     assert received["tracker"] == str(Path("configs/botsort.yaml"))
     assert received["persist"] is True
+    assert received["agnostic_nms"] is True
+
+
+def test_detector_loads_and_forwards_the_configured_nms_setting(monkeypatch) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    received: dict = {}
+
+    def fake_track(**kwargs):
+        received.update(kwargs)
+        return []
+
+    model = SimpleNamespace(track=fake_track)
+    monkeypatch.setattr(YoloDetector, "_load_model", staticmethod(lambda *_: model))
+    detector = YoloDetector(project_root / "configs" / "perception.yaml")
+    detector.detect(np.zeros((50, 50, 3), dtype=np.uint8))
+
+    assert detector.agnostic_nms is True
+    assert received["agnostic_nms"] is True
 
 
 def test_the_configured_tracker_file_exists_and_changes_only_the_track_buffer() -> None:

@@ -1,10 +1,10 @@
 # TODO(perf): measure frame dropout/latency at the current confidence=0.18/image_size=960.
-# agnostic_nms inherits Ultralytics' inspected default of False (not explicitly overridden
-# here); no throughput/accuracy improvement over these values is established yet.
+# Agnostic NMS gave the lowest ID churn in the recorded-clip comparison.
 source_model: models/yolo11s.pt
 openvino_model: models/yolo11s_openvino_model
 confidence: 0.18
 iou: 0.45
+agnostic_nms: true
 image_size: 960
 device: cpu
 # BoT-SORT settings, relative to the project root. Repo-owned so they are versioned and do not

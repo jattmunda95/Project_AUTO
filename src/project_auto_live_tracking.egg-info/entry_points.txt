@@ -1,2 +1,0 @@
-[console_scripts]
-project-auto-live-tracking = project_auto.main:main

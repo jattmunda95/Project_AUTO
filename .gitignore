@@ -1,3 +1,53 @@
 data/recordings/
 logs/
 data/diagnostics/
+data/comparisons/
+
+# Downloaded detector weights and generated OpenVINO exports.
+/models/*.pt
+/models/*_openvino_model/
+# Text encoders downloaded by YOLOE model tests.
+/mobileclip*.ts
+
+# Local test output and Python tooling caches.
+/data/pytest*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Local runtime memory, including SQLite journal files.
+/data/*.db
+/data/*.db-wal
+/data/*.db-shm
+/data/*.db-journal
+
+# Video and audio, wherever they are saved (recordings, comparison overlays, screen captures).
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.wmv
+
+# Model weights and exports anywhere in the tree.
+*.pt
+*.pth
+*.onnx
+*.engine
+*.ts
+*_openvino_model/
+
+# Packaging and build output.
+*.egg-info/
+build/
+dist/
+
+# Secrets, editor and OS files.
+.env
+.vscode/
+.idea/
+.ipynb_checkpoints/
+Thumbs.db
+.DS_Store
