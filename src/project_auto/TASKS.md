@@ -2,6 +2,148 @@
 
 ## Current task
 
+**17 October 2026 update (extends the 16 October block below): live-run diagnosis, ask
+settings changed, and the persistent track-independent question pipeline designed (NOT built).**
+- Live run (normal app, `enforce`): no question ever appeared. Only two `?> ASK` lines, both
+  `action=waiting code=unconvincing` for track 214 (a returning phone, item 7): scores 0.5482
+  and 0.5374. Evidence was plausible band 0.25 plus few views 0.15 = 0.40 against the 0.50
+  ask threshold; the region bonus cannot fire because the `regions` table is empty; 0.5482
+  also sat 0.002 under the 0.55 near-acceptance floor. Read-only DB check: the live file has
+  the `confirmed` column (migration applied), 10 items, 0 confirmed views, 0 negative
+  examples, item 7 has 2 views. The `?> ASK` label is the category for every ask-system line,
+  so "waiting" lines look like a question that failed to appear.
+- Changed (user decision, implemented, 624 tests pass): `near_acceptance_floor` 0.55 -> 0.50 and
+  plausible weight 0.25 -> 0.35, in `configs/identity_policy.yaml` and the dataclass defaults.
+  The ask threshold stays 0.50. Replay of three runs (128 queries): the weight alone adds 1
+  ask, the floor alone adds 3, both together equal the floor alone; every "unconvincing" wait
+  goes. A weak likeness on a mature item (5 views, 0.47) still waits. Four new tests plus the
+  two exact live scores. The replay also showed 11 of the 32 current asks sit on a poor view
+  (7 and 4 in the first two runs), which is why the ask count is above the 8 and 9 quoted on
+  16 October: that comes from the poor-view change, not these settings. Roughly one ask in
+  four queries on those runs; live rate still unmeasured.
+- Designed with the user, NOT built: a persistent, track-independent pending-question queue.
+  The channel for the MVP is the existing OpenCV overlay fed from the stored queue.
+  - A question is created only for a GOOD view. A poor view keeps waiting for a good frame and,
+    if none ever comes, nothing is added (this REMOVES the current "add after 3 poor views"
+    path and poor-view waits stop counting toward give-up). A thin mask that never improves
+    could leave an object unremembered; watch for `awaiting_good_view` live.
+  - Stored per question: crop, embedding, descriptors, model name, top-3 candidates, reasons,
+    box, region, quality, bound track ids. Crops are written on the worker thread.
+  - States QUEUED -> ASKED (when the overlay draws it) -> ANSWERED -> APPLIED, or CANCELLED /
+    SUPERSEDED. No expiry; survives restarts. The overlay countdown goes away; oldest first;
+    skip sends a question to the back of the queue.
+  - Dedupe: a query with embedding similarity >= 0.9 to a pending question joins it (its track
+    id is added; no new question; no cap use). Tracks visible in the same frame never merge.
+    The first good crop is kept unless a later one is clearly better. Cap: 20 distinct
+    questions. A later confident match closes a pending question (SUPERSEDED).
+  - Answers apply to the stored evidence on the coordinator thread: pick adds a confirmed view
+    (and binds any live track; no event if none), new item creates the item with ADDED then
+    REMOVED when the object is gone, not-an-item stores a negative example (table kept, still
+    unread). The 8-view cap and its missing eviction are unchanged.
+  - Build order, one step per approval: (1) `pending_questions` table + manual migration + guard
+    + tests, (2) pure question service + tests, (3) coordinator/overlay integration, the
+    `WAITING` log label for waiting lines, TASKS update. Step 1 awaits the user's go.
+- Deferred until after the MVP demo (explicit): the REST API and web page (shipped later as a
+  separate single unit with onboard compute, reachable from the internet; thread vs separate
+  process, FastAPI vs standard library, auth and pairing, tunnel vs relay all undecided or
+  recommended-only), items/locations endpoints, packaging.
+- Discussed only, no code: a second image checker. Local feature matching (SIFT/AKAZE/ORB in
+  OpenCV; learned XFeat and DISK, Apache 2, ALIKED, BSD-3, licences stated by the user; the
+  `rpautrat/SuperPoint` PyTorch port is MIT code with no matcher and an unconfirmed LightGlue
+  fit) only helps when two views share visible points, so it cannot join a phone's two faces.
+  A vision-language checker was judged advisory at best. Plan: once real answers exist, replay
+  stored crop pairs against them offline before building anything. No benchmark approved.
+- Open or to confirm: whether "yes" last night covered both the `WAITING` label reading and
+  overlay-as-MVP-channel reading; whether repeated "unconvincing" waits still give up and add
+  NEW after 3 attempts; the similarity scale behind the 0.9 (capture's "redundant" check logs
+  about 0.94); the 20-question cap number. Not investigated: track 185 repeatedly matching item
+  2 but deferred `item_already_claimed`, many `stale_job` lines, track ids reaching ~438.
+- Docs not synced (still the backlog from 16 October): this block, `docs/15`, `TODO.md` are
+  updated; `02`, `03`, `06`, `12`, `13`, README and the `.html` twins are not, and `01`, `06`,
+  `12` and README still quote the old ReID 0.55/0.15 values.
+
+**16 October 2026 update (supersedes the 15 October list where they conflict): the
+ask-and-answer identity flow is built and wired. Plan: `docs/15-ask-and-answer-plan.md`.**
+- Why: the 0.68 acceptance line cuts through a soft score distribution. Replaying run
+  `20261016T030339Z` (76 queries) showed 9 NEW rejections scored 0.55-0.68 with clear leads,
+  and a phone's two faces (about 0.49) became separate items. The system now asks, learns a
+  confirmed view from the answer, and asks less as galleries grow. This was item 5 of the
+  15 October order ("only if needed"); it is now done rather than conditional.
+- Built, all new unless noted: `events/identity_policy.py` + `configs/identity_policy.yaml`
+  (pure policy: MATCH / NEW / WAIT / ASK, additive "ask confidence", plain-English reasons
+  with no numbers); `events/question_registry.py` (one question per track, open-question
+  limit, track and item-pair cooldowns, 60 s expiry, give-up count); `utils/question_overlay.py`
+  (band over the bottom of the OpenCV window; keys 1/2/3 pick, N new item, X not an item,
+  S skip; q/w/r unaffected); `utils/reference_images.py` (a thumbnail per stored view,
+  written on the worker thread to `data/reference_images/`, git-ignored); coordinator wiring
+  (`answer_question`, expiry, cancel on track retire, held answers, give-up, confirmed capture
+  jobs that skip the similarity gates but still need a good mask); schema (below). The scene
+  processor needed no change: `IdentityDecision` already carried the candidates.
+- Behaviour you will see: `mode: enforce` is the default in `configs/identity_policy.yaml`.
+  A near miss (0.55-0.68), a weak look-alike, a close race or an appearance/colour
+  disagreement now opens a question instead of adding a duplicate. A poor view never stops a
+  clearly-new object being added, and (since the later change below) never stops a question
+  either (the 17 October design above reverses that for the persistent queue: poor views wait).
+  `mode: observe` logs
+  `?> ASK ... applied=False` and changes nothing; `off` ignores the policy. The diagnostic
+  entry point always forces `off`. After 60 s an unanswered question closes; after 3
+  unresolved attempts (expiries, or views that never improve) the object is added as NEW.
+  A skip never counts towards that. Starting values (hand-set, not fitted): ask threshold
+  0.50, near-acceptance band 0.50 (was 0.55 until 17 October), plausible floor 0.45 with
+  weight 0.35 (was 0.25 until 17 October), close-race lead 0.15, fewer than 4
+  views and a region match each add 0.15 only once something else has fired.
+- Schema (approved and built 16 October): `item_embeddings.confirmed` (boolean, default false;
+  only a PICK answer sets it) and a new `negative_examples` table, both with models, store
+  methods, tests and `docs/manual_schema_update_ask_answer.sql`. `run_app` now stops at
+  startup with an instruction if a column is missing, rather than failing later with "no such
+  column". Verified on a COPY of the live file (15 items, 32 views, 46 events, 2 regions all
+  kept; every view `confirmed = 0`; gallery loads). The live `data/project_auto.db` is NOT
+  migrated and was not modified.
+- Verified: 601 tests pass (`--basetemp` plain folder). The new modules were checked by
+  breaking them on purpose: 15 deliberate breakages across the registry, the coordinator's
+  enforce and answer paths, and the overlay's reason layout. All were caught; one (give-up
+  only checked when waiting, never before asking) survived at first and exposed a real gap,
+  now fixed. The overlay was rendered to images at 1280 and 640 wide, which found two layout
+  bugs the pixel tests missed. The migration script was run against a copy of the live file.
+  Ruff reports nothing in any new file. It still reports errors in 15 files that predate this
+  work and were left alone (tracker, scene_processor, store, models, logging, drawing, camera,
+  region_calibration, reid_diagnostics, reference_policy and five test files); `store.py`,
+  `models.py` and `logging.py` carry the same import-order or unused-noqa error with and
+  without my edits.
+- NOT verified: nothing was run on the live camera. The question rate is unmeasured live:
+  replaying `20261016T030339Z` gives 8 of 76 queries and `20261016T060446Z` gives 9 of 38 (9
+  of 35 tracks), about one question per four objects on a young gallery.
+- Next, in order: (1) stop the app, back up `data/project_auto.db` together with its `-wal`
+  and `-shm` files, then apply `docs/manual_schema_update_ask_answer.sql` (the header gives the
+  command, the check and the undo); the app will refuse to start until this is done.
+  `data/diagnostics/project_auto_diagnostics.db` needs it too if it exists, or move it aside.
+  (2) One supervised live session with the overlay: read the `?> ASK` lines, tune
+  `ask_threshold` and `item_pair_cooldown_seconds` if there are too many questions.
+  (3) Decide whether to compare new objects against `negative_examples` (nothing reads them
+  yet, so a hand marked "not an item" is asked about again under a new track; it needs a
+  similarity threshold) or drop the table. (4) A confirmed view is refused when an item
+  already holds the maximum 8 views; diversity-aware replacement is still future work.
+  (5) Items can only be named "item N" in a question; typing a label is not built.
+  (6) Docs sync: `docs/05-data.md` is updated; `02`, `03`, `06`, `12`, `13` and every `.html`
+  twin do not yet describe the policy, registry, overlay, thumbnails or the `confirmed` flag.
+- Decisions I made on defaults when not told, all in `configs/identity_policy.yaml`: question
+  lifetime 60 s, give up after 3 attempts, skip not counted, mode `enforce`.
+- Later on 16 October (user's design, after the first live run showed no question at all): a
+  phone at 0.5957 (track 147) was held back as `bad_view` and never asked about. A poor view
+  (mask occupancy under 0.40 or SAM score under 0.60) now gets its question, with "I can't see
+  this clearly, so check the object itself before answering." as the first reason, and the
+  question is marked `poor_view`. The answer still decides identity, but the view is never
+  kept: a PICK links the track and submits no capture (the worker's own occupancy gate is
+  0.10, too loose to rely on); NEW adds nothing until that track's first good view, which is
+  then added without asking again (the user's answer stands even if that view matches
+  something), or after 3 more poor or failed views it is added from the best view there is; a
+  track lost while waiting adds nothing (`new_item_dropped`); X ignores the track but stores no
+  negative example. Weak evidence on a poor view is unchanged: a poor view does not lower the
+  bar for asking. Waiting on a poor view now happens only with `view.blocks_match: true`.
+  Verified: 619 tests pass; 13 deliberate breakages across policy, registry and coordinator
+  were all caught; the overlay was rendered at 1280 and 640 wide with five reasons and all
+  fit. NOT verified live.
+
 **15 October 2026 update (supersedes the 14 October list below where they conflict):**
 - ReID calibration is dropped: the user judged performance satisfactory. Weights were set by
   hand to DINO 0.70 / colour 0.25 / aspect 0.05, acceptance 0.68, margin 0.06 (estimates
@@ -16,6 +158,16 @@
   stillness and reference capture; (3) commit in logical groups; (4) fixes the MVP shows
   (FPS/latency, vanished-probe skipping, not_still log, BoT-SORT); (5) ask-and-answer flow
   only if needed for multi-face items (a phone's other face scores about 0.49); (6) docs sync.
+
+**15 October 2026 Git state:** `git push` was slow (about 280 MB) and then rejected: commit
+`86988d0` had added `mobileclip2_b.ts` (242 MB, over GitHub's 100 MB limit) plus
+`yoloe-26s-seg*.pt` and `yolo26s.pt`; a later commit untracked them but they stayed in
+history. Fix: branch `backup-before-squash` kept as a safety copy, `git reset --soft
+origin/main`, one new commit `a79b416` (net tree unchanged, largest object 57 KB), `git gc`
+done (pack still 1010 MiB because the backup branch holds the big blobs). `.gitignore` now
+covers video formats, weights/exports anywhere, `egg-info`, build dirs, `.env`, editor/OS
+files; both `egg-info` folders untracked. Push pending; then delete the backup branch and
+expire the reflog. `notebooks/ReID_Tuning/` is still tracked (decision open).
 
 **14 October 2026 update (previous work order):** detector selection
 is complete. YOLO11s/OpenVINO with YAML `agnostic_nms: true` is implemented in the live

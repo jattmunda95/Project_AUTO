@@ -1,0 +1,123 @@
+# Ask-and-answer identity policy (events/identity_policy.py).
+#
+# acceptance_threshold and margin_threshold are deliberately NOT repeated here:
+# the policy is constructed with the values already loaded from configs/reid.yaml,
+# so the matcher and the policy can never disagree about what counts as a match.
+#
+# Every value below is a hand-set starting estimate, chosen by replaying
+# logs/reid_runs/20261016T030339Z (76 queries, 14 items) on 16 October 2026.
+# None of it is fitted to labelled data. The replay counts quoted in the comments
+# describe that one run only.
+
+# --- Mode ---
+# off      the coordinator ignores this policy; behaviour is exactly as it was before.
+# observe  the policy runs on every resolve result and logs an ASK line saying what it
+#          WOULD do, while the previous behaviour still applies. Nothing is asked.
+# enforce  an ASK opens a question on the live window (keys 1/2/3, N, X, S); a WAIT defers
+#          the track. Neither adds a possible duplicate and neither guesses. An unanswered
+#          question closes after question_ttl_seconds, and an object that stays unresolved
+#          is added as NEW after give_up_after_attempts, so nothing is lost for good.
+# The diagnostic entry point (reid_diagnostics_app) always runs with this switched off,
+# because it records ground truth for the normal flow and questions would distort it.
+mode: enforce
+
+# --- View quality: ask anyway, but never learn from a poor view ---
+# Masked foreground pixels over segmented box area, as PreparedReference reports it.
+# In the replayed run, queries below 0.40 were accepted 24% of the time against 58%
+# above it, so a crop like that is a poor picture to store.
+# This is a mask-sanity measure, NOT occlusion detection.
+# A poor view does NOT stop a question (changed 16 October 2026: holding it back stalled
+# a phone at 0.60 in a live run). It changes what the answer does:
+#   pick        -> the track is linked to that item, but this view is not saved
+#   new item    -> known to be new, but only added on the track's next good view
+#   not an item -> the track is ignored, but no negative example is saved
+# Stricter than scene_processor.yaml's capture gate (occupancy 0.10) on purpose.
+view:
+  min_mask_occupancy: 0.40
+  # SAM's own confidence in the mask it returned. Matches scene_processor.yaml's
+  # min_mask_score, which gates reference capture.
+  min_mask_score: 0.60
+  # Box area is deliberately not gated here. It correlates with match rate in the
+  # replayed run, but it also tracks how close the object is to the camera, which is
+  # an unresolved placement problem; gating on it would hide that instead.
+
+  # When true, a poor view also blocks a confident MATCH (the check order first
+  # sketched on 16 October 2026: bad view, then match). Replaying the run measured
+  # what that order costs: 5 of the 37 matches were accepted on a view below the mask
+  # occupancy floor and would become WAIT instead, while the set of questions asked
+  # did not change at all -- 7 either way. Off by default: a confident match stands on
+  # a poor view. Set true to make a poor view wait for a better frame before anything,
+  # matching and asking included.
+  blocks_match: false
+
+# --- Ask confidence ---
+# Evidence adds up. A question is asked at or above ask_threshold.
+# Triggers can fire on their own; modifiers only count once a trigger has fired,
+# so how many views are stored and where the object sits can never by themselves
+# cause a question.
+ask_threshold: 0.50
+
+bands:
+  # Top score sits just under acceptance: a clear winner the threshold rejects.
+  # This is the near-miss case the whole flow exists for (9 queries in the replayed
+  # run, including the phone seen from its two faces).
+  # Lowered from 0.55 to 0.50 on 17 October after a live run: a returning phone scored
+  # 0.5482 and 0.5374 and sat just under 0.55, so it never asked. Replaying three runs
+  # (128 queries) this adds 3 questions and removes every "unconvincing" wait.
+  near_acceptance_floor: 0.50
+  # Top score is a weak but real likeness. Below this floor, with no other evidence,
+  # the object is treated as new.
+  # Set to 0.45 rather than 0.50 to reach the case this whole flow was written for: the
+  # two faces of one phone score about 0.49 against each other, which at 0.50 was still
+  # silently becoming a duplicate item. At 0.45 that weak likeness alone becomes a retry,
+  # and any rival alongside it becomes a question. Measured cost across the replayed run:
+  # one extra question, and one fewer item added.
+  plausible_floor: 0.45
+  # Lead over the runner-up under this counts as a close race. Raised from the 0.06
+  # match margin because at 0.06 the rule never fired: every near tie in the replayed
+  # run had both candidates below 0.49, which looks like a new object, not a confusion.
+  close_race_margin: 0.15
+  # Fewer stored views than this makes a borderline score harder to trust, and makes
+  # the user's answer more valuable, since it adds a confirmed view where one is missing.
+  few_views_below: 4
+
+evidence:
+  near_acceptance: 0.50
+  # Raised from 0.25 to 0.35 on 17 October, so a weak likeness on an item with few
+  # stored views (0.35 + the 0.15 few-views modifier) reaches the ask threshold. This
+  # fades as galleries mature, because the few-views modifier stops applying.
+  plausible: 0.35
+  close_race: 0.30
+  # Appearance and colour pick different items. Only counted above plausible_floor:
+  # below it the components disagree because nothing matches at all (21 of the 24
+  # disagreements in the replayed run were weak scores like that).
+  component_disagreement: 0.20
+  # Modifiers.
+  few_views: 0.15
+  # The candidate was last seen in the region this object is now sitting in, which is
+  # a genuine point of confusion rather than evidence of identity on its own.
+  region_match: 0.15
+
+# --- Limits ---
+# max_open_questions is read by both: the policy waits instead of asking past it, and the
+# registry refuses to open another. The cooldowns and the two settings after them are read
+# by the question registry (events/question_registry.py); the policy is told as a boolean
+# whether a cooldown is in force, so it never reads a clock.
+limits:
+  max_open_questions: 3
+  # After a question about a track closes without resolving it, wait this long before
+  # asking about the same track again.
+  track_cooldown_seconds: 30.0
+  # After the same pair of look-alike items was asked about, do not ask about that pair
+  # again for this long, on any track. This is what makes the system ask less as it learns:
+  # the same confusion coming back under a new track ID is not a fresh question.
+  item_pair_cooldown_seconds: 120.0
+  # An unanswered question closes after this long, so it cannot hold one of the open slots
+  # indefinitely. Starting estimate: long enough to notice and answer, short enough to move on.
+  question_ttl_seconds: 60.0
+  # An object whose identity stays unresolved (questions that expire unanswered, or views
+  # that never improve) is added as a NEW item after this many attempts, rather than
+  # stalling forever and never being remembered. A wrong guess is recoverable once an
+  # answer can link the two items; an object that is never added is not. A SKIP does not
+  # count: it is the user saying "not now", and the plan is to never guess against that.
+  give_up_after_attempts: 3

@@ -1,6 +1,7 @@
 data/recordings/
 logs/
 data/diagnostics/
+data/reference_images/
 data/comparisons/
 
 # Downloaded detector weights and generated OpenVINO exports.

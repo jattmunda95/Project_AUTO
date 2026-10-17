@@ -25,6 +25,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from project_auto.events.reference_policy import CandidateKind
+from project_auto.memory.reid import CandidateScore
 from project_auto.perception.detector import Detection
 from project_auto.perception.scene_processor import PreparedReference
 
@@ -70,6 +71,12 @@ class IdentificationJob:
     # Runtime correlation, independent of optional diagnostic query IDs.
     job_id: int | None = None
     priority: bool = False
+    # A view the user has just confirmed as this item. It is stored without the
+    # "too different" and "too similar" gates, because the person has already decided it
+    # belongs: a phone's back scores about 0.49 against its screen side, which the
+    # consistency gate would reject as the very thing they confirmed. The mask-quality
+    # gates still apply, and a rejected view still never touches the item's profile.
+    confirmed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +96,12 @@ class IdentificationResult:
     # Echoed back from the job so the coordinator can record the applied outcome.
     query_id: str | None = None
     job_id: int | None = None
+    # Evidence for the identity policy (events/identity_policy.py): every scored gallery
+    # item and the matcher's own reason ("accepted", "low_margin", "below_threshold"...).
+    # Excluded from equality like the matcher's diagnostic fields, and never decided on
+    # here: the coordinator hands them to the policy.
+    candidates: tuple[CandidateScore, ...] = field(default=(), compare=False)
+    decision_reason: str = field(default="", compare=False)
 
 
 _OUTSTANDING = (IdentificationState.QUEUED, IdentificationState.PROCESSING)

@@ -42,7 +42,7 @@ def test_schema_creates_required_tables_and_composite_index(engine: Engine) -> N
     database_inspector = inspect(engine)
 
     assert set(database_inspector.get_table_names()) == {
-        "items", "item_events", "item_embeddings", "regions"
+        "items", "item_events", "item_embeddings", "regions", "negative_examples"
     }
     event_indexes = {index["name"] for index in database_inspector.get_indexes("item_events")}
     assert "ix_item_events_item_id_occurred_at" in event_indexes

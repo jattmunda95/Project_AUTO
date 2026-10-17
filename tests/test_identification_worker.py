@@ -427,3 +427,175 @@ def test_priority_handoff_runs_after_active_job_before_waiting_regular_job(worke
     finally:
         release.set()
         worker.stop(2)
+
+
+class TestReferenceThumbnails:
+    """The worker writes a picture beside each stored reference, and only then."""
+
+    @pytest.fixture
+    def images(self, tmp_path):
+        from project_auto.utils.reference_images import ReferenceImageStore
+
+        return ReferenceImageStore(root=tmp_path / "images")
+
+    def capture_job(self) -> IdentificationJob:
+        return IdentificationJob(
+            kind="capture", track_id=7, item_id=9, precomputed_reference=reference()
+        )
+
+    def test_a_stored_reference_records_the_path_of_its_thumbnail(
+        self, worker: IdentificationWorker, store: Mock, images
+    ) -> None:
+        worker.reference_images = images
+        store.add_reference_if_needed.return_value = (True, 1)
+
+        worker._process(self.capture_job())
+
+        recorded = store.add_reference_if_needed.call_args.kwargs["object_image_path"]
+        assert recorded is not None
+        assert (images.root / recorded).is_file()
+
+    def test_without_a_thumbnail_store_references_are_stored_as_before(
+        self, worker: IdentificationWorker, store: Mock
+    ) -> None:
+        store.add_reference_if_needed.return_value = (True, 1)
+
+        worker._process(self.capture_job())
+
+        assert store.add_reference_if_needed.call_args.kwargs["object_image_path"] is None
+
+    def test_a_refused_reference_leaves_no_orphan_picture(
+        self, worker: IdentificationWorker, store: Mock, images
+    ) -> None:
+        """The gallery-full path: the picture is written first, so it must be removed."""
+        worker.reference_images = images
+        store.add_reference_if_needed.return_value = (False, 2)
+
+        result = worker._process(self.capture_job())
+
+        assert result.status == "skipped"
+        assert not list(images.root.rglob("*.png"))
+
+    def test_a_failed_picture_never_loses_the_reference(
+        self, worker: IdentificationWorker, store: Mock, tmp_path
+    ) -> None:
+        from project_auto.utils.reference_images import ReferenceImageStore
+
+        blocked = tmp_path / "blocked"
+        blocked.write_text("a file, not a folder", encoding="utf-8")
+        worker.reference_images = ReferenceImageStore(root=blocked)
+        store.add_reference_if_needed.return_value = (True, 1)
+
+        result = worker._process(self.capture_job())
+
+        assert result.status == "captured"
+        assert store.add_reference_if_needed.call_args.kwargs["object_image_path"] is None
+
+    def test_a_rejected_candidate_writes_no_picture(
+        self, worker: IdentificationWorker, store: Mock, images
+    ) -> None:
+        """Rejected views never reach storage, so they must not reach the disk either."""
+        worker.reference_images = images
+        worker.min_mask_score = 0.9  # reference() reports sam_score 0.0
+
+        result = worker._process(self.capture_job())
+
+        assert result.status == "skipped"
+        store.add_reference_if_needed.assert_not_called()
+        assert not images.root.exists()
+
+    def test_the_picture_is_written_on_the_worker_thread_not_the_caller(
+        self, worker: IdentificationWorker, store: Mock, tmp_path
+    ) -> None:
+        from project_auto.utils.reference_images import ReferenceImageStore
+
+        threads: list[str] = []
+
+        def name() -> str:
+            # Called from inside save(), so it reports which thread is doing the disk write.
+            threads.append(threading.current_thread().name)
+            return "view"
+
+        worker.reference_images = ReferenceImageStore(root=tmp_path / "images", name_factory=name)
+        store.add_reference_if_needed.return_value = (True, 1)
+        worker.start()
+        try:
+            worker.submit(self.capture_job())
+            deadline = time.monotonic() + 5
+            while not threads and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            worker.stop()
+
+        assert threads == ["identification-worker"]
+
+
+class TestConfirmedViews:
+    """A view the user confirmed skips the similarity gates, and only those."""
+
+    @pytest.fixture
+    def gated(self, worker: IdentificationWorker):
+        """A worker with the real gates on and item 9 already holding one reference."""
+        from project_auto.memory.reid import GalleryEntry
+
+        worker.min_reference_consistency = 0.5
+        worker.reference_novelty_threshold = 0.93
+        worker.min_mask_score = 0.6
+        worker.min_mask_occupancy = 0.1
+        worker._gallery = [GalleryEntry(item_id=9, embeddings=np.array([[1.0, 0.0]], np.float32))]
+        return worker
+
+    def job(self, embedding, confirmed: bool, sam: float = 0.9, occupancy: float = 0.7):
+        return IdentificationJob(
+            kind="capture",
+            track_id=7,
+            item_id=9,
+            confirmed=confirmed,
+            precomputed_reference=PreparedReference(
+                crop=Image.new("RGB", (4, 4)),
+                embedding=np.array(embedding, dtype=np.float32),
+                sam_score=sam,
+                mask_occupancy=occupancy,
+            ),
+        )
+
+    def test_a_view_too_different_is_rejected_unless_the_user_confirmed_it(
+        self, gated: IdentificationWorker, store: Mock
+    ) -> None:
+        """The phone's back looks nothing like its front, which is exactly the point."""
+        store.add_reference_if_needed.return_value = (True, 2)
+        different = [0.0, 1.0]
+
+        assert gated._process(self.job(different, confirmed=False)).failure_reason == "inconsistent"
+        assert gated._process(self.job(different, confirmed=True)).status == "captured"
+
+    def test_a_view_too_similar_is_rejected_unless_the_user_confirmed_it(
+        self, gated: IdentificationWorker, store: Mock
+    ) -> None:
+        store.add_reference_if_needed.return_value = (True, 2)
+        same = [1.0, 0.0]
+
+        assert gated._process(self.job(same, confirmed=False)).failure_reason == "redundant"
+        assert gated._process(self.job(same, confirmed=True)).status == "captured"
+
+    def test_a_confirmed_view_still_needs_a_usable_mask(
+        self, gated: IdentificationWorker, store: Mock
+    ) -> None:
+        """Being told it is the right item does not make a bad crop worth learning from."""
+        different = [0.0, 1.0]
+
+        poor_score = gated._process(self.job(different, confirmed=True, sam=0.3))
+        thin_mask = gated._process(self.job(different, confirmed=True, occupancy=0.02))
+
+        assert poor_score.failure_reason == "low_mask_score"
+        assert thin_mask.failure_reason == "low_mask_occupancy"
+        store.add_reference_if_needed.assert_not_called()
+
+    def test_a_confirmed_view_still_respects_the_reference_cap(
+        self, gated: IdentificationWorker, store: Mock
+    ) -> None:
+        store.add_reference_if_needed.return_value = (False, 8)
+
+        result = gated._process(self.job([0.0, 1.0], confirmed=True))
+
+        assert result.status == "skipped" and result.failure_reason == "gallery_full"

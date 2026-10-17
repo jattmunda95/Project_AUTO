@@ -49,6 +49,7 @@ class Category:
     MATCH = "MATCH"
     ASSOCIATE = "ASSOC"
     AMBIGUOUS = "AMBIG"
+    ASK = "ASK"
     REJECT = "REJECT"
     DEFER = "DEFER"
     CAPTURE = "CAPTURE"
@@ -68,6 +69,7 @@ _STYLE: dict[str, tuple[str, str]] = {
     Category.MATCH: ("==", "\033[96m"),  # cyan - a confident match
     Category.ASSOCIATE: ("->", "\033[94m"),  # blue - silent claim, no event
     Category.AMBIGUOUS: ("??", "\033[93m"),  # yellow - could not disambiguate
+    Category.ASK: ("?>", "\x1b[33m"),  # orange - a question for the user
     Category.REJECT: ("xx", "\033[91m"),  # red - never reached matching
     Category.DEFER: ("..", "\033[90m"),  # grey - cooldown/backpressure
     Category.CAPTURE: ("**", "\033[36m"),  # dim cyan - reference capture

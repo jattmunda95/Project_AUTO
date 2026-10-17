@@ -12,6 +12,8 @@ captures toward the configured target count. This file only wires the collaborat
 together; it does not decide identity itself.
 """
 
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic
 
@@ -21,6 +23,8 @@ import yaml
 from project_auto.capture.camera import Camera, CameraConfig
 from project_auto.events.coordinator import IdentityCoordinator
 from project_auto.events.event_engine import EventEngine
+from project_auto.events.identity_policy import IdentityPolicy, IdentityPolicyConfig
+from project_auto.events.question_registry import Answer, Question, QuestionRegistry
 from project_auto.events.removal_policy import RemovalConfig
 from project_auto.memory.reid import ReidConfig, ReidMatcher
 from project_auto.memory.store import DatabaseStore
@@ -31,7 +35,95 @@ from project_auto.perception.tracker import DetectionTracker
 from project_auto.region_queries import query_regions
 from project_auto.utils.drawing import draw_detections, draw_regions
 from project_auto.utils.logging import Category, log_action
+from project_auto.utils.question_overlay import QuestionOverlay, ThumbnailCache
+from project_auto.utils.reference_images import ReferenceImageStore
 from project_auto.utils.reid_diagnostics import ReidDiagnostics
+
+
+def _build_reference_images(
+    project_root: Path, scene_processor_settings: dict
+) -> ReferenceImageStore | None:
+    """Return the thumbnail store configured in scene_processor.yaml, or None if disabled.
+
+    An empty or missing reference_image_dir turns thumbnails off; the path is relative to
+    the project root. The folder is created on the first save, not here.
+    """
+    directory = scene_processor_settings.get("reference_image_dir")
+    if not directory:
+        return None
+    return ReferenceImageStore(
+        root=project_root / str(directory),
+        max_edge=int(scene_processor_settings.get("reference_image_max_edge", 256)),
+    )
+
+
+def _build_identity_policy(
+    project_root: Path, reid_config: ReidConfig, mode: str | None = None
+) -> IdentityPolicy:
+    """Return the ask-and-answer policy, configured from configs/identity_policy.yaml.
+
+    The acceptance and margin thresholds are taken from the ReidConfig the matcher already
+    uses, never re-read from the policy file, so the two can never disagree. mode, when
+    given, overrides the file's mode.
+    """
+    config = IdentityPolicyConfig.from_yaml(project_root / "configs" / "identity_policy.yaml")
+    if mode is not None:
+        config = replace(config, mode=mode)
+    return IdentityPolicy(
+        config=config,
+        acceptance_threshold=reid_config.acceptance_threshold,
+        margin_threshold=reid_config.margin_threshold,
+    )
+
+
+def _require_current_schema(store: DatabaseStore, database_path: Path) -> None:
+    """Stop with a clear instruction if the database lacks columns this version needs.
+
+    create_all never alters an existing table, so a database made before a column was added
+    would otherwise fail later with a bare "no such column". Nothing is changed here: the
+    update is a manual SQL script, applied after a backup, never run automatically.
+    """
+    missing = store.missing_schema_columns()
+    if not missing:
+        return
+    columns = ", ".join(f"{table}.{column}" for table, column in missing)
+    raise RuntimeError(
+        f"The database {database_path} is missing {columns}, which this version of "
+        "Project AUTO needs. Nothing was changed. Stop the app, make a backup copy of the "
+        "database file, then apply docs/manual_schema_update_ask_answer.sql (its header "
+        "explains how). To start from an empty database instead, move this one aside."
+    )
+
+
+def _policy_mode_override(diagnostics: ReidDiagnostics | None) -> str | None:
+    """Return the identity-policy mode a run must use, or None to use the configured one.
+
+    A diagnostic run records ground truth for the normal flow, so questions and waits must
+    not change what it records: the policy is switched off for it.
+    """
+    return "off" if diagnostics is not None else None
+
+
+def _answer_open_question(
+    answer_question: Callable[[int, Answer, float], Question | None],
+    overlay: QuestionOverlay,
+    open_questions: tuple[Question, ...],
+    key: int,
+    now: float,
+) -> Answer | None:
+    """Apply a key press to the oldest open question, and return the answer it gave.
+
+    answer_question is the coordinator's method: it closes the question and carries the
+    answer out (link, add, ignore or wait). Returns None when nothing is open, the key is
+    not an answer (q, w and r are left to the caller), or the answer was stale and ignored.
+    """
+    if not open_questions:
+        return None
+    answer = overlay.answer_for_key(key, open_questions[0])
+    if answer is None:
+        return None
+    applied = answer_question(open_questions[0].id, answer, now)
+    return answer if applied is not None else None
 
 
 def run_app(
@@ -63,12 +155,16 @@ def run_app(
     with scene_processor_config_path.open(encoding="utf-8") as config_file:
         scene_processor_settings = yaml.safe_load(config_file)
 
+    # The diagnostic entry point supplies its own database whose item ids overlap the real
+    # ones, so it must never write into the real thumbnail folder.
+    uses_default_database = database_path is None
     if database_path is None:
         database_path = project_root / table_settings["database"]["path"]
     store = DatabaseStore(database_path)
 
     try:
         store.create_schema()
+        _require_current_schema(store, database_path)
         camera = Camera(CameraConfig(**camera_settings))
         detector = YoloDetector(perception_config_path)
         tracker = DetectionTracker(
@@ -98,6 +194,24 @@ def run_app(
             SceneProcessorConfig.from_yaml(scene_processor_config_path),
             segmenter,
             matcher,
+        )
+        reference_images = (
+            _build_reference_images(project_root, scene_processor_settings)
+            if uses_default_database
+            else None
+        )
+        # A diagnostic run records ground truth for the normal flow, so it must not be
+        # changed by questions or waits: the policy is switched off for it.
+        identity_policy = _build_identity_policy(
+            project_root, reid_config, mode=_policy_mode_override(diagnostics)
+        )
+        question_registry = QuestionRegistry(identity_policy.config)
+        question_overlay = QuestionOverlay(
+            thumbnails=(
+                ThumbnailCache(resolve=reference_images.resolve)
+                if reference_images is not None
+                else ThumbnailCache()
+            )
         )
         coordinator = IdentityCoordinator(
             scene_processor=scene_processor,
@@ -137,6 +251,9 @@ def run_app(
             worker_torch_threads=int(scene_processor_settings["worker_torch_threads"]),
             removal_config=RemovalConfig(**scene_processor_settings.get("removal", {})),
             diagnostics=diagnostics,
+            reference_images=reference_images,
+            identity_policy=identity_policy,
+            question_registry=question_registry,
         )
 
         with camera:
@@ -193,9 +310,17 @@ def run_app(
                 if highlight_frames_left > 0:
                     debug_frame = draw_regions(debug_frame, highlighted_regions)
                     highlight_frames_left -= 1
+                # The coordinator opens, expires and applies questions; the app only draws what
+                # is open and forwards the key press. Idle, and free, while nothing is asked.
+                question_now = monotonic()
+                open_questions = question_registry.open_questions()
+                debug_frame = question_overlay.draw(debug_frame, open_questions, question_now)
                 cv2.imshow("Project AUTO - q quit, w where item, r inspect region", debug_frame)
 
                 key = cv2.waitKey(1) & 0xFF
+                _answer_open_question(
+                    coordinator.answer_question, question_overlay, open_questions, key, monotonic()
+                )
                 if key == ord("q"):
                     break
                 if key in (ord("w"), ord("r")):

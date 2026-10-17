@@ -30,9 +30,11 @@ free item/status lookups; the tracker only supplies signals and per-frame detect
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from time import monotonic
 
 import numpy as np
@@ -48,12 +50,23 @@ from project_auto.events.identification_worker import (
     IdentificationWorker,
     IdentificationWorkerProtocol,
 )
+from project_auto.events.identity_policy import (
+    REASON_BAD_VIEW,
+    REASON_UNCONVINCING,
+    AskContext,
+    IdentityOutcome,
+    IdentityPolicy,
+    PolicyCandidate,
+    PolicyDecision,
+    ViewQuality,
+)
+from project_auto.events.question_registry import Answer, AnswerKind, Question, QuestionRegistry
 from project_auto.events.reference_policy import (
     CandidateKind,
     ReferencePolicy,
 )
 from project_auto.events.removal_policy import RemovalConfig, RemovalPolicy, center_distance
-from project_auto.memory.models import ItemStatus
+from project_auto.memory.models import ItemEventType, ItemStatus
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.descriptors import (
     clip_box_to_frame,
@@ -64,7 +77,11 @@ from project_auto.perception.detector import Detection
 from project_auto.perception.scene_processor import PreparedReference, SceneProcessor
 from project_auto.perception.tracker import TrackSignal, TrackSignalType
 from project_auto.utils.logging import Category, log_action
+from project_auto.utils.reference_images import ReferenceImageStore
 from project_auto.utils.reid_diagnostics import ReidDiagnostics
+
+# How many of the best candidates get a region lookup; the rest cost a read for no benefit.
+_REGION_LOOKUP_LIMIT = 3
 
 
 @dataclass(slots=True)
@@ -104,6 +121,16 @@ class IdentityCoordinator:
     removal_config: RemovalConfig = field(default_factory=RemovalConfig)
     # Optional ground-truth diagnostics for resolve jobs; None disables recording.
     diagnostics: ReidDiagnostics | None = None
+    # Optional thumbnail store handed to the worker; None keeps references picture-less.
+    reference_images: ReferenceImageStore | None = None
+    # Optional ask-and-answer policy (events/identity_policy.py). None, or a policy whose
+    # mode is "off", leaves identity handling exactly as it was before the policy existed.
+    identity_policy: IdentityPolicy | None = None
+    # Questions put to the user. The coordinator opens one when the policy says ASK (only in
+    # "enforce" mode), expires and cancels them, and applies the answer (answer_question).
+    # The app shares this object only to draw whatever is open. None keeps the old
+    # behaviour of deferring a track instead of asking.
+    question_registry: QuestionRegistry | None = None
     clock: Callable[[], float] = field(default=monotonic, repr=False)
     worker: IdentificationWorkerProtocol | None = None
     reference_policy: ReferencePolicy = field(init=False, repr=False)
@@ -123,6 +150,18 @@ class IdentityCoordinator:
     _early_last_seen: dict[int, float] = field(default_factory=dict, init=False, repr=False)
     # An accepted match whose candidate is briefly invisible waits here to be applied.
     _held_matches: dict[int, IdentificationResult] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    # The resolve result behind each open question, kept so the answer can be applied with
+    # the crop and embedding the question was asked about.
+    _asked: dict[int, IdentificationResult] = field(default_factory=dict, init=False, repr=False)
+    # An answer given while its object was briefly not visible waits here to be applied.
+    _held_answers: dict[int, tuple[Question, Answer, IdentificationResult]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    # Tracks the user said are new while the view was too poor to keep: the result the
+    # question was asked about, and how many further poor views have arrived since.
+    _awaiting_good_view: dict[int, tuple[IdentificationResult, int]] = field(
         default_factory=dict, init=False, repr=False
     )
     _inflight: dict[int, int] = field(default_factory=dict, init=False, repr=False)
@@ -152,6 +191,7 @@ class IdentityCoordinator:
                 min_reference_consistency=self.min_reference_consistency,
                 worker_torch_threads=self.worker_torch_threads,
                 diagnostics=self.diagnostics,
+                reference_images=self.reference_images,
             )
         self.worker.start()
 
@@ -174,6 +214,7 @@ class IdentityCoordinator:
         """
         now = self.clock()
         assert self.worker is not None
+        self._expire_questions(now)
         self._frame_index += 1
         self.event_engine.frame_size = (frame.shape[1], frame.shape[0])
         retired = {
@@ -200,6 +241,7 @@ class IdentityCoordinator:
         self._expire_missing(now, hard_only=True)
         self._schedule_handoffs(frame, now)
         self._apply_held_matches()
+        self._apply_held_answers()
         self._apply_results(self.worker.poll_results())
 
         for signal in signals:
@@ -280,6 +322,16 @@ class IdentityCoordinator:
         held = self._held_matches.pop(track_id, None)
         if held is not None:
             self._record_outcome(held, None, "STALE")
+        self._held_answers.pop(track_id, None)
+        if self._awaiting_good_view.pop(track_id, None) is not None:
+            # Known to be new, but never seen well enough to keep. Nothing is added: an
+            # item stored from only a poor view would be a poor thing to match against.
+            log_action(Category.ASK, track=track_id, action="new_item_dropped", reason="track_lost")
+        if self.question_registry is not None:
+            cancelled = self.question_registry.forget_track(track_id)
+            if cancelled is not None:
+                self._asked.pop(cancelled.id, None)
+                log_action(Category.ASK, track=track_id, question=cancelled.id, action="cancelled")
         self._reference_manager.forget(track_id)
         self.reference_policy.forget(track_id)
 
@@ -616,6 +668,14 @@ class IdentityCoordinator:
             )
             return
 
+        if track_id in self._awaiting_good_view:
+            # The user already said this is new; the only question left is the view.
+            self._add_when_view_is_good(result, now)
+            return
+
+        if self._policy_defers(result, now):
+            return
+
         if result.status in ("pending", "error"):
             self._record_outcome(result, None, "ERROR" if result.status == "error" else "DEFER")
             log_action(
@@ -650,20 +710,7 @@ class IdentityCoordinator:
             return
 
         if result.status == "new":
-            # reid.py already logged the NEW decision; event_engine.process_add logs the
-            # persisted EVENT once the item actually exists.
-            add_signal = TrackSignal(
-                signal_type=TrackSignalType.ADD, track_id=track_id, detection=detection
-            )
-            item, _ = self.event_engine.process_signal(add_signal)
-            self.removal_policy.bind(item.id, detection)
-            self._record_outcome(result, item.id, "ADDED")
-            self._reference_manager.mark_identified(track_id)
-            # This resolve embedding becomes baseline reference 1 at no extra cost;
-            # the policy schedules whatever baseline references still remain.
-            self.reference_policy.on_item_created(track_id, self._frame_index)
-            if result.reference is not None:
-                self._submit_capture(track_id, item.id, result.reference)
+            self._add_new_item(result, detection)
             return
 
         # reid.py already logged the MATCH decision with scores; only the branch below
@@ -671,6 +718,40 @@ class IdentityCoordinator:
         item_id = result.item_id
         if item_id is None:
             raise RuntimeError("An EXISTING identity result requires a permanent item_id")
+        self._apply_matched_item(result, detection, item_id, now)
+
+    def _add_new_item(self, result: IdentificationResult, detection: Detection) -> None:
+        """Create a permanent item for a track, as a NEW result or a NEW answer does."""
+        track_id = result.track_id
+        # reid.py already logged the NEW decision; event_engine.process_add logs the
+        # persisted EVENT once the item actually exists.
+        add_signal = TrackSignal(
+            signal_type=TrackSignalType.ADD, track_id=track_id, detection=detection
+        )
+        item, _ = self.event_engine.process_signal(add_signal)
+        self.removal_policy.bind(item.id, detection)
+        self._record_outcome(result, item.id, "ADDED")
+        self._reference_manager.mark_identified(track_id)
+        # This resolve embedding becomes baseline reference 1 at no extra cost;
+        # the policy schedules whatever baseline references still remain.
+        self.reference_policy.on_item_created(track_id, self._frame_index)
+        if result.reference is not None:
+            self._submit_capture(track_id, item.id, result.reference)
+
+    def _apply_matched_item(
+        self,
+        result: IdentificationResult,
+        detection: Detection,
+        item_id: int,
+        now: float,
+        confirmed: bool = False,
+    ) -> None:
+        """Bind a track to an existing item, as an accepted match or a PICK answer does.
+
+        confirmed is True when the user chose the item, so the view is stored without the
+        similarity gates (see IdentificationJob.confirmed).
+        """
+        track_id = result.track_id
         if self.event_engine.is_item_claimed(item_id, excluding_track_id=track_id):
             # Another visible track already owns this item; keep retrying instead.
             log_action(Category.DEFER, track=track_id, item=item_id, reason="item_already_claimed")
@@ -709,17 +790,458 @@ class IdentityCoordinator:
         # movement, so it starts at rest rather than scheduling baseline captures.
         self.reference_policy.on_item_associated(track_id)
         if result.reference is not None:
-            self._submit_capture(track_id, item_id, result.reference)
+            self._submit_capture(track_id, item_id, result.reference, confirmed=confirmed)
 
-    def _submit_capture(self, track_id: int, item_id: int, reference: PreparedReference) -> None:
-        """Persist a reference already computed by a resolve job, off this thread."""
+    def _policy_defers(self, result: IdentificationResult, now: float) -> bool:
+        """Consult the identity policy; return True when it has handled this result.
+
+        Only a result the matcher refused is consulted: NEW (below the acceptance
+        threshold) or a low-margin tie. A confident match never reaches the policy.
+
+        In "observe" mode the policy only logs what it would do and this returns False, so
+        the previous behaviour applies untouched. In "enforce" mode an ASK opens a question
+        and a WAIT defers the track; neither adds a possible duplicate, and neither guesses.
+        """
+        policy = self.identity_policy
+        if policy is None or policy.config.mode == "off":
+            return False
+        decision = self._consult_policy(policy, result, now)
+        if decision is None:
+            return False
+        if decision.outcome not in (IdentityOutcome.ASK, IdentityOutcome.WAIT):
+            return False
+        if policy.config.mode != "enforce":
+            log_action(
+                Category.ASK,
+                track=result.track_id,
+                mode=policy.config.mode,
+                outcome=decision.outcome.value,
+                code=decision.code,
+                applied=False,
+                items=self._item_list(decision),
+                evidence="+".join(decision.evidence) or "-",
+                why=" ".join(decision.reasons),
+            )
+            return False
+        return self._enforce(policy, result, decision, now)
+
+    def _enforce(
+        self,
+        policy: IdentityPolicy,
+        result: IdentificationResult,
+        decision: PolicyDecision,
+        now: float,
+    ) -> bool:
+        """Act on an ASK or WAIT: open a question, wait, or give up and add the object."""
+        track_id = result.track_id
+        registry = self.question_registry
+        config = policy.config
+
+        if registry is None:
+            # Nothing can be asked without a registry, so defer rather than guess. This is
+            # the behaviour from before questions existed.
+            self._log_waiting(result, decision, decision.code)
+            self._record_outcome(result, None, decision.outcome.name)
+            self._reference_manager.mark_deferred(
+                track_id, now, config.track_cooldown_seconds, f"policy_{decision.code}"
+            )
+            return True
+
+        code = decision.code
+        # Only views that never improve and weak likenesses count as the object stalling.
+        # A cooldown or the open-question limit says nothing about the object itself.
+        if decision.outcome is IdentityOutcome.WAIT and code in (
+            REASON_BAD_VIEW,
+            REASON_UNCONVINCING,
+        ):
+            registry.note_unresolved(track_id)
+        # Checked before asking, not only before waiting: an object that has already stalled
+        # enough times is added instead of being asked about yet again.
+        if registry.should_give_up(track_id):
+            return self._give_up(result, decision, now)
+
+        if decision.outcome is IdentityOutcome.ASK:
+            if self._open_question(registry, result, decision, now) is not None:
+                self._record_outcome(result, None, "ASK")
+                self._reference_manager.mark_deferred(
+                    track_id, now, config.question_ttl_seconds, "awaiting_answer"
+                )
+                return True
+            # The policy allowed it but the registry would not (a limit or cooldown it
+            # could not foresee). Treat it as a wait, not as a reason to guess.
+            code = "ask_refused"
+
+        self._log_waiting(result, decision, code)
+        self._record_outcome(result, None, "WAIT")
+        # A poor view can improve on the very next frame, so it retries sooner than a
+        # question that is cooling down.
+        cooldown = (
+            self.bad_mask_cooldown_seconds
+            if code == REASON_BAD_VIEW
+            else config.track_cooldown_seconds
+        )
+        self._reference_manager.mark_deferred(track_id, now, cooldown, f"policy_{code}")
+        return True
+
+    def _give_up(self, result: IdentificationResult, decision: PolicyDecision, now: float) -> bool:
+        """Add an object that stayed unresolved, rather than leave it unremembered forever.
+
+        A wrong guess here is recoverable once an answer can link the two items; an object
+        that is never added is not.
+        """
+        assert self.question_registry is not None
+        track_id = result.track_id
+        log_action(
+            Category.ASK,
+            track=track_id,
+            action="gave_up",
+            attempts=self.question_registry.unresolved_attempts(track_id),
+            items=self._item_list(decision),
+        )
+        detection = self._visible.get(track_id)
+        if detection is None:
+            self._record_outcome(result, None, "DROPPED")
+            self._reference_manager.mark_deferred(
+                track_id, now, self.queue_full_retry_seconds, "not_visible"
+            )
+            return True
+        self._add_new_item(replace(result, status="new"), detection)
+        return True
+
+    def _open_question(
+        self,
+        registry: QuestionRegistry,
+        result: IdentificationResult,
+        decision: PolicyDecision,
+        now: float,
+    ) -> Question | None:
+        """Open a question about this result, with each candidate's stored picture."""
+        assert result.reference is not None
+        images: dict[int, Path | None] = {}
+        for candidate in decision.candidates:
+            recorded = self.store.get_reference_image_path(candidate.item_id)
+            images[candidate.item_id] = Path(recorded) if recorded else None
+        question = registry.ask(
+            result.track_id,
+            decision,
+            now,
+            crop=result.reference.crop,
+            candidate_images=images,
+        )
+        if question is None:
+            return None
+        self._asked[question.id] = result
+        log_action(
+            Category.ASK,
+            track=result.track_id,
+            question=question.id,
+            action="asked",
+            items=self._item_list(decision),
+            evidence="+".join(decision.evidence) or "-",
+            why=" ".join(decision.reasons),
+        )
+        return question
+
+    def _log_waiting(
+        self, result: IdentificationResult, decision: PolicyDecision, code: str
+    ) -> None:
+        log_action(
+            Category.ASK,
+            track=result.track_id,
+            action="waiting",
+            code=code,
+            items=self._item_list(decision),
+            why=" ".join(decision.reasons),
+        )
+
+    @staticmethod
+    def _item_list(decision: PolicyDecision) -> str:
+        return ",".join(str(item.item_id) for item in decision.candidates) or "-"
+
+    def _consult_policy(
+        self, policy: IdentityPolicy, result: IdentificationResult, now: float
+    ) -> PolicyDecision | None:
+        """Build the policy's inputs from one resolve result; None when it does not apply."""
+        refused_tie = result.status == "pending" and result.decision_reason == "low_margin"
+        if result.kind != "resolve" or not (result.status == "new" or refused_tie):
+            return None
+        if not result.candidates or result.reference is None:
+            return None
+
+        track_id = result.track_id
+        detection = self._visible.get(track_id)
+        here = self._region_id_at(detection)
+        candidates = tuple(
+            PolicyCandidate.from_score(
+                score,
+                # Only the leading few are worth a database read.
+                region_matches=(
+                    here is not None
+                    and index < _REGION_LOOKUP_LIMIT
+                    and self._last_seen_region_id(score.item_id) == here
+                ),
+            )
+            for index, score in enumerate(result.candidates)
+        )
+        claimed = frozenset(
+            score.item_id
+            for score in result.candidates
+            if self.event_engine.is_item_claimed(score.item_id, excluding_track_id=track_id)
+        )
+        if self.question_registry is not None:
+            context = self.question_registry.context(
+                track_id,
+                now,
+                tuple(score.item_id for score in result.candidates if score.item_id not in claimed),
+                claimed,
+            )
+        else:
+            context = AskContext(claimed_item_ids=claimed)
+        return policy.decide(
+            candidates,
+            ViewQuality(
+                mask_occupancy=result.reference.mask_occupancy,
+                mask_score=result.reference.sam_score,
+            ),
+            context,
+        )
+
+    # --- Questions: expiry, answers ---------------------------------------------------
+
+    def _expire_questions(self, now: float) -> None:
+        """Close questions whose time ran out; their tracks retry when their wait ends."""
+        if self.question_registry is None:
+            return
+        for question in self.question_registry.expire(now):
+            self._asked.pop(question.id, None)
+            log_action(
+                Category.ASK, track=question.track_id, question=question.id, action="expired"
+            )
+
+    def answer_question(
+        self, question_id: int, answer: Answer, now: float | None = None
+    ) -> Question | None:
+        """Record the user's answer and apply it; None if the question is no longer open.
+
+        A late or repeated answer is ignored, never applied. If the object is momentarily
+        not visible the answer waits and is applied as soon as it is.
+        """
+        registry = self.question_registry
+        if registry is None:
+            return None
+        now = self.clock() if now is None else now
+        question = registry.answer(question_id, answer, now)
+        asked = self._asked.pop(question_id, None)
+        if question is None:
+            log_action(Category.ASK, question=question_id, action="stale_answer_ignored")
+            return None
+        log_action(
+            Category.ASK,
+            track=question.track_id,
+            question=question.id,
+            action="answered",
+            answer=answer.kind.value,
+            item=answer.item_id,
+            poor_view=question.poor_view,
+        )
+        if asked is None:
+            return question
+        detection = self._visible.get(question.track_id)
+        if detection is None:
+            self._held_answers[question.track_id] = (question, answer, asked)
+            return question
+        self._apply_answer(question, answer, asked, detection, now)
+        return question
+
+    def _remember_not_an_item(self, asked: IdentificationResult) -> None:
+        """Store the view a person called not an item; a failure never loses the answer.
+
+        Only the embedding and descriptors are stored: no picture is written, because the
+        answer is applied on the main thread and image files are written by the worker.
+        """
+        reference = asked.reference
+        if reference is None:
+            return
+        try:
+            self.store.add_negative_example(
+                reference.embedding,
+                self.reid_model_name,
+                aspect_ratio=reference.aspect_ratio or None,
+                color_histogram=reference.color_histogram
+                if reference.color_histogram.size
+                else None,
+            )
+        except Exception as error:  # noqa: BLE001 - the track is ignored either way
+            log_action(
+                Category.ERROR,
+                track=asked.track_id,
+                action="negative_example_save",
+                error=type(error).__name__,
+            )
+
+    def _apply_held_answers(self) -> None:
+        """Apply answers that arrived while their object was out of view."""
+        for track_id in list(self._held_answers):
+            if track_id in self._visible:
+                question, answer, asked = self._held_answers.pop(track_id)
+                self._apply_answer(question, answer, asked, self._visible[track_id], self.clock())
+
+    def _apply_answer(
+        self,
+        question: Question,
+        answer: Answer,
+        asked: IdentificationResult,
+        detection: Detection,
+        now: float,
+    ) -> None:
+        """Do what the user decided. Skipping and ignoring never create or link anything.
+
+        On a poor view the answer still decides who the object is, but the view itself is
+        never kept: a pick links without saving a picture, a new item waits for a good view
+        before it is added, and not-an-item stores no negative example.
+        """
+        track_id = question.track_id
+        if answer.kind is AnswerKind.PICK and answer.item_id is not None:
+            matched = replace(asked, status="existing", item_id=answer.item_id)
+            if question.poor_view:
+                # No reference means nothing is submitted for capture. The worker's own mask
+                # gate is looser than the policy's, so it cannot be relied on to refuse it.
+                matched = replace(matched, reference=None)
+            self._apply_matched_item(matched, detection, answer.item_id, now, confirmed=True)
+        elif answer.kind is AnswerKind.NEW:
+            if question.poor_view:
+                self._awaiting_good_view[track_id] = (asked, 0)
+                self._record_outcome(asked, None, "AWAITING_VIEW")
+                log_action(Category.ASK, track=track_id, action="new_item_awaiting_view")
+                # Retry at the bad-view pace, not the question's: the answer is in, and the
+                # only thing still missing is a frame worth keeping.
+                self._reference_manager.mark_deferred(
+                    track_id, now, self.bad_mask_cooldown_seconds, "awaiting_good_view"
+                )
+            else:
+                self._add_new_item(replace(asked, status="new"), detection)
+        elif answer.kind is AnswerKind.NOT_AN_ITEM:
+            # Ignored for as long as this track lives, and remembered as something that is
+            # not an item. Nothing reads the memory yet, so a hand marked here is still
+            # asked about when it reappears under a new track; comparing against it is a
+            # separate step that needs a similarity threshold. A poor view would make a
+            # poor example, so it is not remembered.
+            if not question.poor_view:
+                self._remember_not_an_item(asked)
+            self._record_outcome(asked, None, "IGNORED")
+            self._reference_manager.mark_deferred(track_id, now, math.inf, "not_an_item")
+        else:
+            # Skip: "not now". Never guess against it; try again only after the cooldown.
+            self._record_outcome(asked, None, "SKIPPED")
+            assert self.question_registry is not None
+            self._reference_manager.mark_deferred(
+                track_id,
+                now,
+                self.question_registry.config.track_cooldown_seconds,
+                "question_skipped",
+            )
+
+    def _add_when_view_is_good(self, result: IdentificationResult, now: float) -> None:
+        """Add a track the user said is new, from the first view good enough to keep.
+
+        Whatever the matcher now thinks, the user's answer stands: nothing is asked again.
+        Poor views count toward the same give-up limit as unanswered questions; past it the
+        item is added from the best view there is, because an object that is never added
+        is lost for good, while a poor first picture is improved by later captures.
+        """
+        track_id = result.track_id
+        detection = self._visible.get(track_id)
+        if detection is None:
+            self._record_outcome(result, None, "DROPPED")
+            self._reference_manager.mark_deferred(
+                track_id, now, self.queue_full_retry_seconds, "not_visible"
+            )
+            return
+
+        asked, poor_views = self._awaiting_good_view[track_id]
+        if result.reference is not None and self._view_is_usable(result.reference):
+            del self._awaiting_good_view[track_id]
+            log_action(Category.ASK, track=track_id, action="new_item_added", view="good")
+            self._add_new_item(replace(result, status="new", item_id=None), detection)
+            return
+
+        poor_views += 1
+        assert self.question_registry is not None
+        if poor_views >= self.question_registry.config.give_up_after_attempts:
+            del self._awaiting_good_view[track_id]
+            best = result if result.reference is not None else asked
+            log_action(
+                Category.ASK,
+                track=track_id,
+                action="new_item_added",
+                view="poor",
+                attempts=poor_views,
+            )
+            self._add_new_item(replace(best, status="new", item_id=None), detection)
+            return
+
+        self._awaiting_good_view[track_id] = (asked, poor_views)
+        self._record_outcome(result, None, "AWAITING_VIEW")
+        log_action(
+            Category.ASK, track=track_id, action="new_item_awaiting_view", attempts=poor_views
+        )
+        self._reference_manager.mark_deferred(
+            track_id, now, self.bad_mask_cooldown_seconds, "awaiting_good_view"
+        )
+
+    def _view_is_usable(self, reference: PreparedReference) -> bool:
+        """Judge a view by the policy's own floors, so asking and keeping never disagree."""
+        policy = self.identity_policy
+        if policy is None:
+            return True
+        return policy.view_is_usable(
+            ViewQuality(mask_occupancy=reference.mask_occupancy, mask_score=reference.sam_score)
+        )
+
+    def _region_id_at(self, detection: Detection | None) -> int | None:
+        """Return the region this detection sits in now, or None if unknown or outside all."""
+        if detection is None:
+            return None
+        region = self.store.resolve_box_region(detection.box)
+        return region.id if region is not None else None
+
+    def _last_seen_region_id(self, item_id: int) -> int | None:
+        """Return the region an item was last seen in, or None if it is not known.
+
+        A present item has a live region. A removed item has neither live field, so its
+        last location is where its most recent removal event says it was taken from.
+        """
+        item = self.store.get_item(item_id)
+        if item is None:
+            return None
+        if item.status is not ItemStatus.REMOVED:
+            return item.current_region_id
+        removals = [e for e in item.events if e.event_type is ItemEventType.REMOVED]
+        if not removals:
+            return None
+        latest = max(removals, key=lambda event: (event.occurred_at, event.id))
+        return latest.source_region_id
+
+    def _submit_capture(
+        self,
+        track_id: int,
+        item_id: int,
+        reference: PreparedReference,
+        confirmed: bool = False,
+    ) -> None:
+        """Persist a reference already computed by a resolve job, off this thread.
+
+        A confirmed view (the user picked the item) carries no nomination kind, so it never
+        touches the reference policy's attempt budget, and skips the similarity gates.
+        """
         assert self.worker is not None
         job = IdentificationJob(
             kind="capture",
             track_id=track_id,
             item_id=item_id,
             precomputed_reference=reference,
-            candidate_kind=CandidateKind.INITIAL,
+            candidate_kind=None if confirmed else CandidateKind.INITIAL,
+            confirmed=confirmed,
         )
         if self._submit_job(job):
             self._reference_manager.mark_queued(track_id)

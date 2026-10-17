@@ -4,6 +4,7 @@ Subfunctions:
 - Item defines permanent identity, status, timestamps, and nullable prototype storage.
 - ItemEmbedding links individual JSON vectors and model/crop metadata to permanent IDs.
 - ItemEvent records meaningful lifecycle changes and evidence paths.
+- NegativeExample remembers a view a person said is not an item at all (a hand, the table).
 - Define enum constraints, indexes, relationships, and cascading child deletion.
 
 Models describe storage; store.py validates vectors and updates prototypes. They do not
@@ -17,6 +18,7 @@ from enum import Enum
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Enum as SqlEnum,
     Float,
@@ -25,6 +27,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -167,8 +170,40 @@ class ItemEmbedding(Base):
     )
     object_image_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    # True when a person confirmed that this view is this item (they picked it from a
+    # question); False for every view the system stored on its own, which includes every
+    # row that existed before this column. Declared last because ALTER TABLE ADD COLUMN can
+    # only append: this keeps a migrated database's columns in the same order as a new one's.
+    # The default is also set in the database so the manual ALTER can add it to a table
+    # that already holds rows.
+    confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
 
     item: Mapped[Item] = relationship(back_populates="embeddings")
+
+
+class NegativeExample(Base):
+    """A view a person said is not an item: a hand, the table, scenery.
+
+    Detector class labels are unreliable, so what an object is NOT is learned from its
+    appearance and from being told, never from its class. Rows are evidence only and carry
+    no foreign key: they belong to no item. The embedding uses the same model and
+    preprocessing as ItemEmbedding, so only compare within one model_name.
+    """
+
+    __tablename__ = "negative_examples"
+    __table_args__ = (Index("ix_negative_examples_model_name", "model_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model_name: Mapped[str] = mapped_column(String(200))
+    embedding: Mapped[list[float]] = mapped_column(JSON(none_as_null=True))
+    aspect_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    color_histogram: Mapped[list[float] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    object_image_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class ItemEvent(Base):

@@ -27,6 +27,16 @@ max_movement_reference_attempts: 3
 # replacement (evict the most redundant member to admit a new appearance) is future work.
 max_references_per_item: 8
 
+# Thumbnail of every stored reference view, so a question can show the item instead of just
+# naming it. Written by the identification worker thread, never the camera loop. Only the
+# relative path goes in the database (ItemEmbedding.object_image_path), never image bytes.
+# Relative to the project root; the folder is git-ignored. Empty turns thumbnails off.
+# Only views stored after this was enabled have a picture. Not used by the diagnostic entry
+# point, whose separate database reuses the same item ids.
+reference_image_dir: data/reference_images
+# Long edge in pixels; crops smaller than this are never enlarged.
+reference_image_max_edge: 256
+
 # Stage A cheap gate: applied on the video thread, only to nominated candidates.
 # Laplacian variance depends on crop size and texture, so this is a starting
 # estimate, not a calibrated value.

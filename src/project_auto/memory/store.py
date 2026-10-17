@@ -8,6 +8,8 @@ Implemented subfunctions:
 - count_item_embeddings returns the compatible reference count for a permanent item.
 - add_reference_if_needed serializes count/check/save in one transaction against the
   caller's configured target, keeping prototype updates atomic with accepted writes.
+- add_negative_example / load_negative_embeddings keep views a person said are not items.
+- missing_schema_columns reports columns the models expect that an existing database lacks.
 
 save_item_embedding does NOT enforce a reference-count limit; add_reference_if_needed
 does. The app owns visibility, identity resolution, timing, and gallery refresh. This
@@ -27,12 +29,22 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from numpy.typing import NDArray
 
-from sqlalchemy import create_engine, event, func, or_, select
+from sqlalchemy import create_engine, event, func, inspect, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from project_auto.memory.models import Base, Item, ItemEmbedding, ItemEvent, ItemEventType, ItemStatus, Region, utc_now
+from project_auto.memory.models import (
+    Base,
+    Item,
+    ItemEmbedding,
+    ItemEvent,
+    ItemEventType,
+    ItemStatus,
+    NegativeExample,
+    Region,
+    utc_now,
+)
 from project_auto.memory.regions import Box, box_area_fraction, polygon_area, resolve_region, validate_polygon
 from project_auto.utils.logging import Category, log_action
 
@@ -117,6 +129,27 @@ class DatabaseStore:
         # edited by hand outside this codebase (records manually deleted). Inspect and back
         # up data/project_auto.db before any further deliberate migration or reset.
         Base.metadata.create_all(self.engine)
+
+    def missing_schema_columns(self) -> list[tuple[str, str]]:
+        """Return (table, column) pairs the models expect but this database does not have.
+
+        create_all never alters an existing table, so a database created before a column was
+        added keeps working only until a query names that column. Checking at startup turns
+        that cryptic "no such column" failure into a clear instruction. A table that does not
+        exist at all is not reported: create_schema creates missing tables, which is additive.
+        This only reads; it never changes the database.
+        """
+        inspector = inspect(self.engine)
+        existing_tables = set(inspector.get_table_names())
+        missing: list[tuple[str, str]] = []
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            present = {column["name"] for column in inspector.get_columns(table.name)}
+            missing.extend(
+                (table.name, column.name) for column in table.columns if column.name not in present
+            )
+        return missing
 
     # TODO(schema): track model/preprocessing/descriptor-layout compatibility and prototype
     # provenance. Nothing currently records which embedding model, preprocessing pipeline, or
@@ -350,6 +383,7 @@ class DatabaseStore:
         object_image_path: Path | None = None,
         aspect_ratio: float | None = None,
         color_histogram: list[float] | NDArray | None = None,
+        confirmed: bool = False,
     ) -> ItemEmbedding:
         """Save one normalized reference and its item's prototype atomically.
 
@@ -359,7 +393,8 @@ class DatabaseStore:
         is supported because Item currently has only one prototype column.
         aspect_ratio and color_histogram are optional descriptors captured
         alongside the embedding; a flattened histogram is reshaped by callers
-        using descriptors.py's fixed bin layout.
+        using descriptors.py's fixed bin layout. confirmed records that a person
+        said this view is this item, as opposed to one stored automatically.
         """
         if not isinstance(model_name, str) or not model_name.strip():
             raise ValueError("model_name must not be empty")
@@ -382,20 +417,95 @@ class DatabaseStore:
                 aspect_ratio=aspect_ratio,
                 color_histogram=histogram,
                 object_image_path=str(object_image_path) if object_image_path is not None else None,
+                confirmed=confirmed,
             )
             item.embeddings.append(reference)
             item.item_prototype = self._reference_prototype(item.embeddings)
             session.commit()
         return reference
 
-    def count_item_embeddings(self, item_id: int, model_name: str) -> int:
-        """Return the number of compatible references saved for a permanent item."""
+    @_retry_on_locked()
+    def add_negative_example(
+        self,
+        embedding: list[float] | NDArray,
+        model_name: str,
+        aspect_ratio: float | None = None,
+        color_histogram: list[float] | NDArray | None = None,
+        object_image_path: Path | None = None,
+    ) -> NegativeExample:
+        """Remember a view a person said is not an item (a hand, the table, scenery).
+
+        The vector is validated and normalized like a reference. It belongs to no item and
+        touches no item's prototype. Nothing reads these yet; they are evidence kept for the
+        step that will compare new objects against them.
+        """
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("model_name must not be empty")
+        example = NegativeExample(
+            model_name=model_name,
+            embedding=self._normalized_reference(embedding),
+            aspect_ratio=aspect_ratio,
+            color_histogram=self._normalized_color_histogram(color_histogram),
+            object_image_path=str(object_image_path) if object_image_path is not None else None,
+        )
+        with self.session_factory() as session:
+            session.add(example)
+            session.commit()
+        return example
+
+    def count_negative_examples(self, model_name: str | None = None) -> int:
+        """Return how many views have been marked as not an item, optionally for one model."""
+        statement = select(func.count(NegativeExample.id))
+        if model_name is not None:
+            statement = statement.where(NegativeExample.model_name == model_name)
+        with self.session_factory() as session:
+            return int(session.scalar(statement) or 0)
+
+    def load_negative_embeddings(self, model_name: str) -> NDArray:
+        """Return the normalized negative-example vectors for one model as an (n, d) array.
+
+        An independent float32 snapshot, empty (shape (0, 0)) when there are none.
+        """
+        statement = select(NegativeExample.embedding).where(NegativeExample.model_name == model_name)
+        with self.session_factory() as session:
+            rows = [self._normalized_reference(vector) for vector in session.scalars(statement)]
+        if not rows:
+            return np.empty((0, 0), dtype=np.float32)
+        return np.asarray(rows, dtype=np.float32)
+
+    def get_reference_image_path(self, item_id: int) -> str | None:
+        """Return the recorded thumbnail path of an item's newest picture, or None.
+
+        Only the path is stored, relative to the thumbnail root; None when the item has no
+        stored view with a picture (anything saved before thumbnails existed).
+        """
+        statement = (
+            select(ItemEmbedding.object_image_path)
+            .where(
+                ItemEmbedding.item_id == item_id,
+                ItemEmbedding.object_image_path.is_not(None),
+            )
+            .order_by(ItemEmbedding.created_at.desc(), ItemEmbedding.id.desc())
+            .limit(1)
+        )
+        with self.session_factory() as session:
+            return session.scalar(statement)
+
+    def count_item_embeddings(
+        self, item_id: int, model_name: str, confirmed_only: bool = False
+    ) -> int:
+        """Return the number of compatible references saved for a permanent item.
+
+        confirmed_only counts just the views a person confirmed.
+        """
         if not isinstance(model_name, str) or not model_name.strip():
             raise ValueError("model_name must not be empty")
         statement = select(func.count(ItemEmbedding.id)).where(
             ItemEmbedding.item_id == item_id,
             ItemEmbedding.model_name == model_name,
         )
+        if confirmed_only:
+            statement = statement.where(ItemEmbedding.confirmed.is_(True))
         with self.session_factory() as session:
             return int(session.scalar(statement) or 0)
 
@@ -409,6 +519,7 @@ class DatabaseStore:
         object_image_path: Path | None = None,
         aspect_ratio: float | None = None,
         color_histogram: list[float] | NDArray | None = None,
+        confirmed: bool = False,
     ) -> tuple[bool, int]:
         """Save one reference only while below target_count; update the prototype atomically.
 
@@ -446,6 +557,7 @@ class DatabaseStore:
                 object_image_path=str(object_image_path)
                 if object_image_path is not None
                 else None,
+                confirmed=confirmed,
             )
             item.embeddings.append(reference)
             item.item_prototype = self._reference_prototype(item.embeddings)

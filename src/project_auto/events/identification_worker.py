@@ -39,6 +39,7 @@ from project_auto.events.reference_policy import CandidateKind
 from project_auto.memory.store import DatabaseStore
 from project_auto.perception.scene_processor import IdentityDecision, SceneProcessor
 from project_auto.utils.logging import Category, log_action
+from project_auto.utils.reference_images import ReferenceImageStore
 from project_auto.utils.reid_diagnostics import CandidateRecord, QueryRecord, ReidDiagnostics
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,8 @@ class IdentificationWorker:
     worker_torch_threads: int = 4
     # Optional ground-truth diagnostics; None disables recording entirely.
     diagnostics: ReidDiagnostics | None = None
+    # Optional thumbnail store; None keeps references picture-less, as before.
+    reference_images: ReferenceImageStore | None = None
     _job_queue: IdentificationQueue = field(init=False, repr=False)
     _result_queue: queue.Queue = field(init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
@@ -233,6 +236,11 @@ class IdentificationWorker:
                 status="pending",
                 failure_reason=decision.reason or "unusable_reference",
                 query_id=job.query_id,
+                # A low-margin tie is reported as pending but is a real, scored result:
+                # keep its evidence so the policy can weigh it instead of it being lost.
+                reference=decision.reference,
+                candidates=decision.candidates,
+                decision_reason=decision.reason,
             )
 
         status: str = "new" if decision.decision == "new" else "existing"
@@ -244,6 +252,8 @@ class IdentificationWorker:
             similarity=decision.similarity,
             reference=decision.reference,
             query_id=job.query_id,
+            candidates=decision.candidates,
+            decision_reason=decision.reason,
         )
 
     def _record_resolve(self, job: IdentificationJob, decision: IdentityDecision) -> None:
@@ -362,27 +372,43 @@ class IdentificationWorker:
                 job, "low_mask_occupancy", mask_occupancy=reference.mask_occupancy
             )
 
-        if self.min_reference_consistency > 0.0 and self._has_references(job.item_id):
+        if (
+            self.min_reference_consistency > 0.0
+            and not job.confirmed
+            and self._has_references(job.item_id)
+        ):
             similarity = self._best_existing_similarity(job.item_id, reference.embedding)
             if similarity < self.min_reference_consistency:
                 return self._reject_capture(job, "inconsistent", similarity=similarity)
 
         # Baseline references are deliberately not novelty-gated: the two initial
         # views of a newly added item are expected to look alike.
-        if job.candidate_kind is not CandidateKind.INITIAL:
+        if job.candidate_kind is not CandidateKind.INITIAL and not job.confirmed:
             similarity = self._best_existing_similarity(job.item_id, reference.embedding)
             if similarity >= self.reference_novelty_threshold:
                 return self._reject_capture(job, "redundant", similarity=similarity)
 
+        # Written here, on the worker thread, so the camera loop never waits on the disk.
+        # None means no thumbnail (feature off, or the save failed); the reference is
+        # stored either way, because losing a picture must never lose a reference.
+        image_path = (
+            self.reference_images.save(job.item_id, reference.crop)
+            if self.reference_images is not None
+            else None
+        )
         saved, _ = self.store.add_reference_if_needed(
             item_id=job.item_id,
             embedding=reference.embedding,
             model_name=self.reid_model_name,
             target_count=self.max_references_per_item,
+            object_image_path=image_path,
             aspect_ratio=reference.aspect_ratio,
             color_histogram=reference.color_histogram,
+            confirmed=job.confirmed,
         )
         if not saved:
+            if image_path is not None and self.reference_images is not None:
+                self.reference_images.discard(image_path)
             return self._reject_capture(job, "gallery_full")
 
         log_action(
